@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# claude chat — local-only operator system prompt (never committed)
+system-prompt.local.md
