@@ -4,6 +4,8 @@
 
 **claude chat** is a self-hosted web UI for the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview). It gives you the full agentic Claude Code experience — tool calls, thinking, file edits, shells — in your browser, against **local folders on your machine** or **remote machines over SSH**, with persistent conversations, live token accounting, and a built-in terminal and file browser.
 
+![claude chat](docs/screenshots/01-hero.png)
+
 ---
 
 ## What it does
@@ -11,6 +13,8 @@
 You pick a workspace (a local folder or an SSH path on a remote host), and chat with Claude about it. Claude runs with the full Claude Code toolset — `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebSearch`, `WebFetch`, `Task` (subagents), `TodoWrite`, and more — and every tool call streams into the chat as a rich, expandable card (diffs for edits, line-numbered output for reads, live output for shell commands).
 
 Conversations are persisted in a local SQLite database and can be resumed at any time. The app also discovers existing Claude Code CLI sessions for a folder and lets you continue them.
+
+![Agentic chat with tool cards and diffs](docs/screenshots/02-chat.png)
 
 ---
 
@@ -144,13 +148,17 @@ The tab bar supports several parallel chat instances over different workspaces. 
 
 **The app ships with no system prompt.** Out of the box, sessions run with only a small runtime environment block (workspace info).
 
-To add your own standing instructions, create one of these (first non-empty file wins):
+The easiest way to set one: click the **scroll icon in the top bar** and type your standing instructions into the editor. Saved prompts apply from the next message on — no restart needed.
+
+Under the hood the prompt lives in a plain file, resolved in this order:
 
 1. The file pointed at by `CLAUDE_CHAT_SYSTEM_PROMPT_PATH`
 2. `system-prompt.local.md` in the project root (gitignored — never committed)
 3. `~/.claude-chat/system-prompt.md`
 
-Its contents are prepended to every new session's system prompt. Restart the server after editing.
+You can also edit that file directly; its contents are prepended to every new session's system prompt.
+
+![In-app system prompt editor](docs/screenshots/03-system-prompt.png)
 
 ---
 
@@ -161,7 +169,17 @@ This is a **beta**. Known issues being worked on:
 - **Unstable multi-instance usage** — running several chat tabs at once can misbehave (cross-talk, stuck streams). Treat multi-instance as experimental for now.
 - **SSH conversation "adoption" by local workspaces** — if you have a conversation in an SSH workspace and then switch to a local folder, that conversation can get transferred/claimed by the local workspace. Known, fix planned.
 
-Roadmap: ongoing bug fixes and stabilization of the above, hardening of the SSH layer, and general polish. Issues and PRs welcome.
+## Upcoming features
+
+Beyond bug fixes, here is where claude chat is headed:
+
+- **No-code MCP connector** — add any MCP server to your workspaces from the UI: paste a command or URL, configure auth and env in a form, toggle it per conversation. No JSON files, no restarts.
+- **3D AI model integration for game development** — first-class connectors for 3D generation models (Tripo and similar text/image-to-3D systems), so Claude can generate, fetch, and iterate on 3D assets directly inside a chat.
+- **PBR generation models** — hook up material/texture generation models to produce full PBR sets (albedo, normal, roughness, metallic, AO) from prompts, ready to drop into a game project.
+- **Direct Unreal Engine integration** — drive Unreal directly from the chat: import generated assets, manipulate the project, and let Claude work inside the engine the same way it works inside a codebase today.
+- **Continued bug fixes & stabilization** — multi-instance hardening, SSH workspace isolation (the conversation-adoption bug above), and general reliability work, release by release.
+
+Issues and PRs welcome.
 
 ---
 

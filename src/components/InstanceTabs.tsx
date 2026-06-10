@@ -1,9 +1,11 @@
 'use client';
 
-import { Plus, X } from 'lucide-react';
+import { useState } from 'react';
+import { Plus, ScrollText, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useInstances } from '@/state/instances';
 import Logo from './Logo';
+import SystemPromptModal from './SystemPromptModal';
 
 function basename(p: string | null) {
   if (!p) return null;
@@ -13,6 +15,7 @@ function basename(p: string | null) {
 
 export default function InstanceTabs() {
   const { instances, activeId, setActive, addInstance, removeInstance } = useInstances();
+  const [promptOpen, setPromptOpen] = useState(false);
 
   return (
     <div className="flex items-center gap-2 border-b border-border/70 bg-card/30 px-2.5 py-1.5 backdrop-blur-sm">
@@ -71,6 +74,17 @@ export default function InstanceTabs() {
       >
         <Plus className="h-3.5 w-3.5" />
       </button>
+      <div className="h-5 w-px shrink-0 bg-border/60" aria-hidden="true" />
+      <button
+        type="button"
+        onClick={() => setPromptOpen(true)}
+        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="Edit system prompt"
+        title="Edit system prompt"
+      >
+        <ScrollText className="h-3.5 w-3.5" />
+      </button>
+      <SystemPromptModal open={promptOpen} onClose={() => setPromptOpen(false)} />
     </div>
   );
 }

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { NextRequest } from 'next/server';
-import { CORE_PREFIX } from '@/server/systemPrompt';
+import { readSystemPrompt } from '@/server/systemPrompt';
 import {
   ensureConversation,
   nextMessageSeq,
@@ -950,6 +950,8 @@ export async function POST(req: NextRequest) {
 
         send({ type: 'stream_ready', streamId });
 
+        // Read fresh per session so in-app prompt edits apply immediately.
+        const corePrefix = readSystemPrompt();
         const queryInstance = query({
           prompt: promptInput,
           options: {
@@ -963,7 +965,7 @@ export async function POST(req: NextRequest) {
             ...(remoteMcp ? { mcpServers: { remote: remoteMcp } } : {}),
             ...(mode && mode !== 'default' ? { permissionMode: mode } : {}),
             ...(sessionId ? { resume: sessionId } : {}),
-            systemPrompt: CORE_PREFIX ? `${CORE_PREFIX}\n\n${envBlock}` : envBlock,
+            systemPrompt: corePrefix ? `${corePrefix}\n\n${envBlock}` : envBlock,
             env: { ...process.env },
             pathToClaudeCodeExecutable: process.env.CLAUDE_CLI_PATH || 'claude',
             canUseTool: async (toolName, input, opts) => {
