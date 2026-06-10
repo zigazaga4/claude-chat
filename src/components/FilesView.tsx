@@ -12,6 +12,7 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Download,
   Loader2,
   RefreshCw,
   Upload,
@@ -171,6 +172,26 @@ export default function FilesView() {
       } finally {
         setFileLoading(false);
       }
+    },
+    [cwd],
+  );
+
+  /**
+   * Download a file from the workspace — local or SSH, the server routes by
+   * `cwd`. We navigate a throwaway <a download> at the streaming endpoint so
+   * the browser handles the transfer natively (progress UI, disk spooling,
+   * no size cap from buffering in JS).
+   */
+  const downloadFile = useCallback(
+    (filePath: string) => {
+      if (!cwd) return;
+      const params = new URLSearchParams({ cwd, path: filePath });
+      const a = document.createElement('a');
+      a.href = `/api/fs/download?${params.toString()}`;
+      a.download = basename(filePath);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     },
     [cwd],
   );
@@ -397,6 +418,7 @@ export default function FilesView() {
             onToggle={toggleDir}
             onOpenFile={openFile}
             onUpload={promptUpload}
+            onDownload={downloadFile}
             onFolderDrop={onFolderDrop}
             onFolderDragOver={onFolderDragOver}
             onFolderDragLeave={onFolderDragLeave}
@@ -424,6 +446,16 @@ export default function FilesView() {
                   {file.truncated && ' (truncated)'}
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() => downloadFile(selected)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 hover:text-emerald-100"
+                title={`Download ${selected}`}
+                aria-label={`Download ${selected}`}
+              >
+                <Download className="h-3 w-3" />
+                <span>Download</span>
+              </button>
             </>
           ) : (
             <span>Select a file from the tree.</span>
@@ -480,6 +512,7 @@ type DirNodeProps = {
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
   onUpload: (destPath: string) => void;
+  onDownload: (path: string) => void;
   onFolderDrop: (destPath: string, e: DragEvent<HTMLElement>) => void;
   onFolderDragOver: (destPath: string, e: DragEvent<HTMLElement>) => void;
   onFolderDragLeave: (destPath: string, e: DragEvent<HTMLElement>) => void;
@@ -496,6 +529,7 @@ function DirNode({
   onToggle,
   onOpenFile,
   onUpload,
+  onDownload,
   onFolderDrop,
   onFolderDragOver,
   onFolderDragLeave,
@@ -605,6 +639,7 @@ function DirNode({
                 onToggle={onToggle}
                 onOpenFile={onOpenFile}
                 onUpload={onUpload}
+                onDownload={onDownload}
                 onFolderDrop={onFolderDrop}
                 onFolderDragOver={onFolderDragOver}
                 onFolderDragLeave={onFolderDragLeave}
@@ -616,6 +651,7 @@ function DirNode({
                 depth={depth + 1}
                 selected={selected === e.path}
                 onOpen={onOpenFile}
+                onDownload={onDownload}
               />
             ),
           )}
@@ -630,31 +666,54 @@ function FileNode({
   depth,
   selected,
   onOpen,
+  onDownload,
 }: {
   entry: Entry;
   depth: number;
   selected: boolean;
   onOpen: (path: string) => void;
+  onDownload: (path: string) => void;
 }) {
   const meta = getFileMeta(entry.name);
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(entry.path)}
+    <div
       className={cn(
-        'flex w-full items-center gap-1.5 truncate px-1.5 py-1 text-left hover:bg-secondary/60',
+        'group/file flex w-full items-center hover:bg-secondary/60',
         selected && 'bg-blue-500/15 text-blue-100 hover:bg-blue-500/20',
       )}
-      style={{ paddingLeft: `${4 + depth * 12 + 16}px` }}
-      title={`${entry.path} — ${meta.label}`}
     >
-      <meta.Icon
-        className="h-3.5 w-3.5 shrink-0"
-        style={{ color: meta.color }}
-        aria-hidden="true"
-      />
-      <span className="min-w-0 truncate font-mono text-[12px]">{entry.name}</span>
-    </button>
+      <button
+        type="button"
+        onClick={() => onOpen(entry.path)}
+        className="flex min-w-0 flex-1 items-center gap-1.5 truncate py-1 text-left"
+        style={{ paddingLeft: `${4 + depth * 12 + 16}px` }}
+        title={`${entry.path} — ${meta.label}`}
+      >
+        <meta.Icon
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: meta.color }}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate font-mono text-[12px]">{entry.name}</span>
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDownload(entry.path);
+        }}
+        className={cn(
+          'mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-emerald-300/70 hover:bg-emerald-500/20 hover:text-emerald-100',
+          // Hidden until the row is hovered/focused so the tree stays clean.
+          'opacity-0 transition-opacity group-hover/file:opacity-100 focus-visible:opacity-100',
+          selected && 'opacity-100',
+        )}
+        title={`Download ${entry.path}`}
+        aria-label={`Download ${entry.path}`}
+      >
+        <Download className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }
 
