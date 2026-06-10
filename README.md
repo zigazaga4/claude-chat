@@ -2,6 +2,12 @@
 
 > **Status: BETA** — actively developed. Expect rough edges; see [Known bugs](#known-bugs--roadmap) below.
 
+> ## ⚠️ Set up your system prompt first
+>
+> **claude chat ships with NO system prompt.** The system prompt this app was developed with has been deliberately **stripped from the public code** — out of the box, Claude runs with only a minimal runtime block and completely stock behavior.
+>
+> **You need to set up your own system prompt to tell Claude how to behave.** It takes 30 seconds: click the **scroll icon (📜) in the top bar**, write your standing instructions, and hit Save — it applies from your very next message. (Or drop a `system-prompt.local.md` file in the project root.) Details in [System prompt](#system-prompt).
+
 **claude chat** is a self-hosted web UI for the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview). It gives you the full agentic Claude Code experience — tool calls, thinking, file edits, shells — in your browser, against **local folders on your machine** or **remote machines over SSH**, with persistent conversations, live token accounting, and a built-in terminal and file browser.
 
 ![claude chat](docs/screenshots/01-hero.png)
@@ -39,6 +45,8 @@ Production:
 npm run build
 npm run start        # or: pm2 start ecosystem.config.cjs   (port 3002)
 ```
+
+Then open the app and **set your system prompt** (scroll icon, top bar) — the app ships without one, and Claude behaves like stock Claude until you give it your own instructions.
 
 ### Where data lives
 
