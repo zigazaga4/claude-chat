@@ -177,18 +177,19 @@ export default function FilesView() {
   );
 
   /**
-   * Download a file from the workspace — local or SSH, the server routes by
-   * `cwd`. We navigate a throwaway <a download> at the streaming endpoint so
-   * the browser handles the transfer natively (progress UI, disk spooling,
-   * no size cap from buffering in JS).
+   * Download a path from the workspace — local or SSH, the server routes by
+   * `cwd`. Files come down verbatim; directories are packed into a streamed
+   * `<name>.tar.gz` server-side. We navigate a throwaway <a download> at the
+   * streaming endpoint so the browser handles the transfer natively (progress
+   * UI, disk spooling, no size cap from buffering in JS).
    */
-  const downloadFile = useCallback(
-    (filePath: string) => {
+  const downloadPath = useCallback(
+    (filePath: string, isDir = false) => {
       if (!cwd) return;
       const params = new URLSearchParams({ cwd, path: filePath });
       const a = document.createElement('a');
       a.href = `/api/fs/download?${params.toString()}`;
-      a.download = basename(filePath);
+      a.download = isDir ? `${basename(filePath)}.tar.gz` : basename(filePath);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -418,7 +419,7 @@ export default function FilesView() {
             onToggle={toggleDir}
             onOpenFile={openFile}
             onUpload={promptUpload}
-            onDownload={downloadFile}
+            onDownload={downloadPath}
             onFolderDrop={onFolderDrop}
             onFolderDragOver={onFolderDragOver}
             onFolderDragLeave={onFolderDragLeave}
@@ -448,7 +449,7 @@ export default function FilesView() {
               )}
               <button
                 type="button"
-                onClick={() => downloadFile(selected)}
+                onClick={() => downloadPath(selected)}
                 className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 transition-colors hover:border-emerald-400/70 hover:bg-emerald-500/20 hover:text-emerald-100"
                 title={`Download ${selected}`}
                 aria-label={`Download ${selected}`}
@@ -512,7 +513,7 @@ type DirNodeProps = {
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
   onUpload: (destPath: string) => void;
-  onDownload: (path: string) => void;
+  onDownload: (path: string, isDir?: boolean) => void;
   onFolderDrop: (destPath: string, e: DragEvent<HTMLElement>) => void;
   onFolderDragOver: (destPath: string, e: DragEvent<HTMLElement>) => void;
   onFolderDragLeave: (destPath: string, e: DragEvent<HTMLElement>) => void;
@@ -582,6 +583,22 @@ function DirNode({
           {state?.loading && (
             <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
           )}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload(path, true);
+          }}
+          className={cn(
+            'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-emerald-300/70 hover:bg-emerald-500/20 hover:text-emerald-100',
+            // Hidden until row hover/focus so the tree stays clean.
+            'opacity-0 transition-opacity group-hover/dir:opacity-100 focus-visible:opacity-100',
+          )}
+          title={`Download ${path} as ${basename(path)}.tar.gz`}
+          aria-label={`Download folder ${path} as a tar.gz archive`}
+        >
+          <Download className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"

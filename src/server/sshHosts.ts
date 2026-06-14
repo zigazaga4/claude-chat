@@ -364,6 +364,27 @@ export class RemoteHost {
     );
   }
 
+  /**
+   * Open an exec channel and hand back the raw ssh2 stream **without** any
+   * string coercion, so binary payloads (e.g. a `tar` archive on stdout)
+   * survive intact. The caller owns the stream and must consume it. stderr
+   * is drained here so a chatty command can't stall on a full window.
+   */
+  async execRaw(command: string): Promise<ClientChannel> {
+    await this.connect();
+    const client = this.client!;
+    return new Promise<ClientChannel>((resolve, reject) => {
+      client.exec(command, (err, stream) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        stream.stderr.resume();
+        resolve(stream);
+      });
+    });
+  }
+
   async sftp(): Promise<SFTPWrapper> {
     await this.connect();
     if (this.sftpHandle) return this.sftpHandle;

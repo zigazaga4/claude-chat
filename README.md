@@ -96,6 +96,7 @@ The Files view is a workspace-agnostic file browser:
 - File preview with syntax-aware rendering.
 - **Uploads**: pick any folder in the tree and upload files into it. For local workspaces the files are written straight to disk; for SSH workspaces they are streamed to the remote host **over SFTP**. There is intentionally no server-side size cap — your disk and your link are the limits.
 - **Downloads**: every file row (and the preview header) has a download button. Local files stream from disk; **SSH files stream from the remote host over SFTP** straight to your browser — chunked end to end, so even huge remote files download without being buffered in server memory.
+- **Folder downloads**: folder rows have a download button too. The folder is packed into a gzipped tar **on the fly** (`tar` runs locally for local workspaces, on the remote host for SSH ones) and streamed as a single `<folder>.tar.gz` — no temp files, no server-side buffering, no size cap.
 
 ---
 
