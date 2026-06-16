@@ -47,6 +47,13 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_messages_conv_seq
       ON messages(conversation_id, seq);
 
+    CREATE TABLE IF NOT EXISTS conversation_notes (
+      conversation_id  TEXT PRIMARY KEY,
+      content          TEXT NOT NULL DEFAULT '',
+      updated_at       INTEGER NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS workspaces (
       cwd                       TEXT PRIMARY KEY,
       first_used                INTEGER NOT NULL,

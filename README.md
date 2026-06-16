@@ -152,6 +152,14 @@ Send a message while Claude is in the middle of a long tool-call loop and it lan
 
 The tab bar supports several parallel chat instances over different workspaces. *(Beta: see known bugs.)*
 
+### Per-conversation notebook
+
+Each conversation gets its own private **notebook** that Claude maintains for itself. It's exposed as a `notebook` tool, and its contents are injected into the system prompt every turn — so Claude can write down durable facts, constraints, decisions, and conclusions and still have them later, even after the surrounding messages fall out of the context window.
+
+- **Self-directed**: Claude is instructed to record things worth remembering on its own initiative, and to keep the notes current (it can revise or delete stale lines).
+- **Line-based editing**: the notebook supports `view`, `append`, `insert`, `replace`, and `delete` over numbered lines, so edits are surgical rather than full rewrites.
+- **Scoped + private**: notes belong to one conversation only — never shared across conversations and never shown to the user. They persist in the local SQLite database alongside the conversation.
+
 ---
 
 ## System prompt

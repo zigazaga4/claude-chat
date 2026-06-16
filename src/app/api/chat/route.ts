@@ -5,6 +5,8 @@ import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { NextRequest } from 'next/server';
 import { readSystemPrompt } from '@/server/systemPrompt';
+import { readNotebook } from '@/server/notebook';
+import { createNotebookMcpServer } from '@/server/notebookTools';
 import {
   ensureConversation,
   nextMessageSeq,
@@ -426,6 +428,22 @@ local machine and would be useless here. Instead use the equivalent
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * System-prompt block for the per-conversation notebook: tells the model the
+ * tool exists and that it must use it proactively, and shows the current notes
+ * inline so they're live context every turn. `notes` is the stored blob for
+ * this conversation (empty for a brand-new one).
+ */
+function buildNotebookBlock(notes: string): string {
+  const body = notes.trim() ? notes : '(empty)';
+  return `# Notebook (private — this conversation only)
+
+You have a \`notebook\` tool whose contents are shown below and re-injected here every turn. On your own initiative, without being asked, record durable things you will need later in this conversation and would otherwise forget — facts, constraints, decisions, the user's preferences and conventions, current state, and conclusions. Anything the user tells you to remember is a mandatory write. Keep it accurate: update or delete notes that become outdated. Do not store secrets you do not need or transient chatter.
+
+Current notebook:
+${body}`;
 }
 
 function newSystemMessageId() {
@@ -934,6 +952,16 @@ export async function POST(req: NextRequest) {
           ? await buildSshEnvBlock(cwd)
           : buildLocalEnvBlock(cwd);
         const remoteMcp = isRemote ? createRemoteMcpServer({ workspaceCwd: cwd }) : null;
+        // Per-conversation notebook — available in every workspace. The handler
+        // resolves the live conversation id at call time (it isn't known until
+        // the SDK emits the session), falling back to the resume id.
+        const notebookMcp = createNotebookMcpServer({
+          getConversationId: () => activeConversationId ?? sessionId ?? null,
+        });
+        const mcpServers: Record<string, ReturnType<typeof createNotebookMcpServer>> = {
+          notebook: notebookMcp,
+        };
+        if (remoteMcp) mcpServers.remote = remoteMcp;
         const remoteToolsToBlock = [
           'Bash',
           'BashOutput',
@@ -952,6 +980,12 @@ export async function POST(req: NextRequest) {
 
         // Read fresh per session so in-app prompt edits apply immediately.
         const corePrefix = readSystemPrompt();
+        // Existing notes for a resumed conversation (empty for a brand-new
+        // one). Read here so they're part of the system prompt from turn one;
+        // notes the model writes mid-conversation surface on the next message.
+        const notebookNotes = sessionId ? readNotebook(sessionId) : '';
+        const notebookBlock = buildNotebookBlock(notebookNotes);
+        const baseSystem = corePrefix ? `${corePrefix}\n\n${envBlock}` : envBlock;
         const queryInstance = query({
           prompt: promptInput,
           options: {
@@ -962,10 +996,10 @@ export async function POST(req: NextRequest) {
             includePartialMessages: true,
             tools: { type: 'preset', preset: 'claude_code' },
             ...(isRemote ? { disallowedTools: remoteToolsToBlock } : {}),
-            ...(remoteMcp ? { mcpServers: { remote: remoteMcp } } : {}),
+            mcpServers,
             ...(mode && mode !== 'default' ? { permissionMode: mode } : {}),
             ...(sessionId ? { resume: sessionId } : {}),
-            systemPrompt: corePrefix ? `${corePrefix}\n\n${envBlock}` : envBlock,
+            systemPrompt: `${baseSystem}\n\n${notebookBlock}`,
             env: { ...process.env },
             pathToClaudeCodeExecutable: process.env.CLAUDE_CLI_PATH || 'claude',
             canUseTool: async (toolName, input, opts) => {
