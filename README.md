@@ -159,7 +159,7 @@ Each conversation gets its own private **notebook** that Claude maintains for it
 - **Self-directed**: Claude is instructed to record things worth remembering on its own initiative, and to keep the notes current (it can revise or delete stale lines).
 - **Line-based editing**: the notebook supports `view`, `append`, `insert`, `replace`, and `delete` over numbered lines, so edits are surgical rather than full rewrites.
 - **Scoped + private**: notes belong to one conversation only — never shared across conversations. They persist in the local SQLite database alongside the conversation.
-- **You can read and edit them**: every conversation in the list has a notebook button (✎) — open it to see exactly what Claude has noted and edit the notes yourself. Your changes apply from that conversation's next message.
+- **You can read and edit them**: every conversation in the left-hand workspace panel has a small notebook button (✎) — open it to see exactly what Claude has noted and edit the notes yourself. Your changes apply from that conversation's next message.
 
 ---
 

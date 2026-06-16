@@ -1,17 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import {
-  Loader2,
-  MessageSquarePlus,
-  NotebookPen,
-  RefreshCw,
-  Sparkles,
-} from 'lucide-react';
+import { Loader2, MessageSquarePlus, RefreshCw, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ChatMessage } from '@/lib/types';
 import { useInstances } from '@/state/instances';
-import NotebookModal from './NotebookModal';
 
 type ConversationRow = {
   id: string;
@@ -44,8 +37,6 @@ export default function ConversationPicker() {
   const [loading, setLoading] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** Conversation whose notebook is being viewed/edited (null = modal closed). */
-  const [notebookFor, setNotebookFor] = useState<ConversationRow | null>(null);
 
   const load = useCallback(async () => {
     if (!cwd) return;
@@ -164,73 +155,52 @@ export default function ConversationPicker() {
             const label = row.title ?? `Conversation ${shortId(row.id)}`;
             return (
               <li key={row.id}>
-                <div className="group/row flex w-full items-center gap-1 rounded-xl border border-border/50 bg-card/40 pr-2 transition-colors hover:border-blue-400/40 hover:bg-card/70">
-                  <button
-                    type="button"
-                    onClick={() => void onPick(row)}
-                    disabled={isOpening}
-                    className="flex min-w-0 flex-1 items-center gap-3 rounded-l-xl px-3 py-2.5 text-left disabled:opacity-60"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium">{label}</span>
-                        {row.source === 'sdk' && (
-                          <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-0 text-[9px] uppercase tracking-wide text-muted-foreground">
-                            external
-                          </span>
-                        )}
-                        {row.origin === 'ssh' && (
-                          <span className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1.5 py-0 text-[9px] uppercase tracking-wide text-primary">
-                            ssh
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <span className="font-mono">{shortId(row.id)}</span>
-                        <span className="opacity-50">•</span>
-                        <span>{formatRelative(row.updatedAt)}</span>
-                        {row.messageCount > 0 && (
-                          <>
-                            <span className="opacity-50">•</span>
-                            <span>
-                              {row.messageCount} message{row.messageCount === 1 ? '' : 's'}
-                            </span>
-                          </>
-                        )}
-                      </div>
+                <button
+                  type="button"
+                  onClick={() => void onPick(row)}
+                  disabled={isOpening}
+                  className="group/row flex w-full items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-3 py-2.5 text-left transition-colors hover:border-blue-400/40 hover:bg-card/70 disabled:opacity-60"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{label}</span>
+                      {row.source === 'sdk' && (
+                        <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-0 text-[9px] uppercase tracking-wide text-muted-foreground">
+                          external
+                        </span>
+                      )}
+                      {row.origin === 'ssh' && (
+                        <span className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1.5 py-0 text-[9px] uppercase tracking-wide text-primary">
+                          ssh
+                        </span>
+                      )}
                     </div>
-                    {isOpening ? (
-                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-400" />
-                    ) : (
-                      <span className="shrink-0 text-[11px] font-medium text-muted-foreground transition-colors group-hover/row:text-blue-400">
-                        Open →
-                      </span>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNotebookFor(row)}
-                    title="View / edit this conversation's notebook"
-                    aria-label="View or edit this conversation's notebook"
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground/70 transition-colors hover:bg-secondary hover:text-primary focus-visible:text-primary"
-                  >
-                    <NotebookPen className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <span className="font-mono">{shortId(row.id)}</span>
+                      <span className="opacity-50">•</span>
+                      <span>{formatRelative(row.updatedAt)}</span>
+                      {row.messageCount > 0 && (
+                        <>
+                          <span className="opacity-50">•</span>
+                          <span>
+                            {row.messageCount} message{row.messageCount === 1 ? '' : 's'}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {isOpening ? (
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-400" />
+                  ) : (
+                    <span className="shrink-0 text-[11px] font-medium text-muted-foreground transition-colors group-hover/row:text-blue-400">
+                      Open →
+                    </span>
+                  )}
+                </button>
               </li>
             );
           })}
         </ul>
-      )}
-
-      {notebookFor && (
-        <NotebookModal
-          open
-          conversationId={notebookFor.id}
-          cwd={cwd}
-          label={notebookFor.title ?? `Conversation ${shortId(notebookFor.id)}`}
-          onClose={() => setNotebookFor(null)}
-        />
       )}
     </div>
   );

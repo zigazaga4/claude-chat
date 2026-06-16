@@ -9,6 +9,7 @@ import {
   Loader2,
   LogOut,
   MessageSquarePlus,
+  NotebookPen,
   Plus,
   RefreshCw,
   Sparkles,
@@ -20,6 +21,7 @@ import type { ChatMessage } from '@/lib/types';
 import { useInstances } from '@/state/instances';
 import ConnectSshModal from './ConnectSshModal';
 import FolderPicker from './FolderPicker';
+import NotebookModal from './NotebookModal';
 import RemoteFolderPicker from './RemoteFolderPicker';
 
 type WorkspaceRow = {
@@ -158,6 +160,10 @@ export default function WorkspaceList() {
   const [convsByCwd, setConvsByCwd] = useState<Record<string, ConversationRow[]>>({});
   const [convsLoading, setConvsLoading] = useState<Record<string, boolean>>({});
   const [openingId, setOpeningId] = useState<string | null>(null);
+  /** Conversation whose notebook is open in the editor (null = closed). */
+  const [notebookFor, setNotebookFor] = useState<
+    { id: string; cwd: string; label: string } | null
+  >(null);
   const [loginByCwd, setLoginByCwd] = useState<Record<string, LoginPhase>>({});
   const fetchedCwdsRef = useRef<Set<string>>(new Set());
   const autoLoginAttemptedRef = useRef<Set<string>>(new Set());
@@ -684,40 +690,58 @@ export default function WorkspaceList() {
                                           `Conversation ${shortId(c.id)}`;
                                         return (
                                           <li key={c.id}>
-                                            <button
-                                              type="button"
-                                              onClick={() =>
-                                                void openConv(w.cwd, c)
-                                              }
-                                              disabled={openingId === c.id}
+                                            <div
                                               className={cn(
-                                                'flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors',
+                                                'group/conv flex w-full items-center gap-0.5 rounded pr-0.5 transition-colors',
                                                 isCur
                                                   ? 'bg-emerald-500/15 text-emerald-50'
                                                   : 'hover:bg-secondary',
-                                                openingId === c.id && 'opacity-60',
                                               )}
-                                              title={label}
                                             >
-                                              {isLast ? (
-                                                <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
-                                              ) : (
-                                                <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                                              )}
-                                              <span className="min-w-0 flex-1">
-                                                <span className="block truncate text-[11.5px] leading-tight">
-                                                  {label}
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  void openConv(w.cwd, c)
+                                                }
+                                                disabled={openingId === c.id}
+                                                className={cn(
+                                                  'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left',
+                                                  openingId === c.id && 'opacity-60',
+                                                )}
+                                                title={label}
+                                              >
+                                                {isLast ? (
+                                                  <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
+                                                ) : (
+                                                  <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
+                                                )}
+                                                <span className="min-w-0 flex-1">
+                                                  <span className="block truncate text-[11.5px] leading-tight">
+                                                    {label}
+                                                  </span>
+                                                  <span className="block truncate text-[10px] text-muted-foreground/70">
+                                                    {formatRelative(c.updatedAt)}
+                                                    {c.source === 'sdk' &&
+                                                      ' · external'}
+                                                  </span>
                                                 </span>
-                                                <span className="block truncate text-[10px] text-muted-foreground/70">
-                                                  {formatRelative(c.updatedAt)}
-                                                  {c.source === 'sdk' &&
-                                                    ' · external'}
-                                                </span>
-                                              </span>
-                                              {openingId === c.id && (
-                                                <Loader2 className="h-3 w-3 shrink-0 animate-spin text-emerald-400" />
-                                              )}
-                                            </button>
+                                                {openingId === c.id && (
+                                                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-emerald-400" />
+                                                )}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setNotebookFor({ id: c.id, cwd: w.cwd, label });
+                                                }}
+                                                title="View / edit notebook"
+                                                aria-label="View or edit this conversation's notebook"
+                                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-emerald-300 focus-visible:opacity-100 group-hover/conv:opacity-100"
+                                              >
+                                                <NotebookPen className="h-3 w-3" />
+                                              </button>
+                                            </div>
                                           </li>
                                         );
                                       })}
@@ -892,37 +916,55 @@ export default function WorkspaceList() {
                                   c.title ?? `Conversation ${shortId(c.id)}`;
                                 return (
                                   <li key={c.id}>
-                                    <button
-                                      type="button"
-                                      onClick={() => void openConv(w.cwd, c)}
-                                      disabled={openingId === c.id}
+                                    <div
                                       className={cn(
-                                        'group/conv flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors',
+                                        'group/conv flex w-full items-center gap-0.5 rounded pr-0.5 transition-colors',
                                         isCurrent
                                           ? 'bg-blue-500/15 text-blue-100'
                                           : 'hover:bg-secondary',
-                                        openingId === c.id && 'opacity-60',
                                       )}
-                                      title={label}
                                     >
-                                      {isLast ? (
-                                        <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
-                                      ) : (
-                                        <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                                      )}
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[11.5px] leading-tight">
-                                          {label}
+                                      <button
+                                        type="button"
+                                        onClick={() => void openConv(w.cwd, c)}
+                                        disabled={openingId === c.id}
+                                        className={cn(
+                                          'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left',
+                                          openingId === c.id && 'opacity-60',
+                                        )}
+                                        title={label}
+                                      >
+                                        {isLast ? (
+                                          <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
+                                        ) : (
+                                          <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
+                                        )}
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block truncate text-[11.5px] leading-tight">
+                                            {label}
+                                          </span>
+                                          <span className="block truncate text-[10px] text-muted-foreground/70">
+                                            {formatRelative(c.updatedAt)}
+                                            {c.source === 'sdk' && ' · external'}
+                                          </span>
                                         </span>
-                                        <span className="block truncate text-[10px] text-muted-foreground/70">
-                                          {formatRelative(c.updatedAt)}
-                                          {c.source === 'sdk' && ' · external'}
-                                        </span>
-                                      </span>
-                                      {openingId === c.id && (
-                                        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-400" />
-                                      )}
-                                    </button>
+                                        {openingId === c.id && (
+                                          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-400" />
+                                        )}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setNotebookFor({ id: c.id, cwd: w.cwd, label });
+                                        }}
+                                        title="View / edit notebook"
+                                        aria-label="View or edit this conversation's notebook"
+                                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-300 focus-visible:opacity-100 group-hover/conv:opacity-100"
+                                      >
+                                        <NotebookPen className="h-3 w-3" />
+                                      </button>
+                                    </div>
                                   </li>
                                 );
                               })}
@@ -962,6 +1004,16 @@ export default function WorkspaceList() {
           </ul>
         )}
       </div>
+
+      {notebookFor && (
+        <NotebookModal
+          open
+          conversationId={notebookFor.id}
+          cwd={notebookFor.cwd}
+          label={notebookFor.label}
+          onClose={() => setNotebookFor(null)}
+        />
+      )}
 
       <FolderPicker
         open={pickerOpen}
