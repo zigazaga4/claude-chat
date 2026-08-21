@@ -21,10 +21,8 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { dataDir } from './dataDir';
 import { loadOrCreateKey } from './keyFile';
+import { readConfiguredSecret } from './secretSource';
 
 // Re-exported so server-side callers have one place to import auth from,
 // while the client keeps importing the crypto-free module directly.
@@ -46,39 +44,19 @@ function signingKey(): Buffer {
 /** Where the password lives when it is not in the environment. */
 const PASSWORD_FILE = 'app-password';
 
-// Re-read at most this often. The gate consults the password on every request
-// (the session signature is bound to it), so this must not be a disk hit each
-// time — but it should still pick up a change without a restart.
-const PASSWORD_TTL_MS = 5000;
-let cached: { value: string; readAt: number } | null = null;
-
 /**
  * The configured password: `APP_PASSWORD` if it is actually exported,
- * otherwise `~/.claude-chat/app-password`.
+ * otherwise the `app-password` file in the data directory.
  *
- * The file is not a nicety, it is the reliable path. `next start` in this
- * project does **not** load `.env.local` into `process.env` — verified by
- * booting the built server with the ambient variables stripped and watching
- * the gate report no password at all. The other keys in that file appear to
- * work only because they are also exported from the shell, so an env-only
- * design here would have failed closed the first time it ran under pm2
- * without those exports, locking every device out.
+ * The file is not a nicety, it is the reliable path — see secretSource.ts for
+ * the full reasoning. An env-only design here would have failed closed the
+ * first time it ran under pm2 without those exports, locking every device out.
  */
 function configuredPassword(): string {
-  const fromEnv = process.env.APP_PASSWORD?.trim();
-  if (fromEnv) return fromEnv;
-
-  const now = Date.now();
-  if (cached && now - cached.readAt < PASSWORD_TTL_MS) return cached.value;
-
-  let value = '';
-  try {
-    value = fs.readFileSync(path.join(dataDir(), PASSWORD_FILE), 'utf8').trim();
-  } catch {
-    // No file — treated as "no password", which fails closed.
-  }
-  cached = { value, readAt: now };
-  return value;
+  return readConfiguredSecret({
+    envVar: 'APP_PASSWORD',
+    fileName: PASSWORD_FILE,
+  });
 }
 
 /**

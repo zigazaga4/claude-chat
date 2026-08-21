@@ -13,6 +13,7 @@ import {
   Clock,
   Image as ImageIcon,
   Loader2,
+  Mic,
   Minimize2,
   Square,
   Terminal,
@@ -31,6 +32,7 @@ import type {
 import type { EffortLevel, EffortSuggestion, ModelId } from '@/lib/models';
 import type { ChatBackend } from '@/lib/backends';
 import type { SendImage } from '@/hooks/useStreamingChat';
+import { useVoiceInput } from '@/hooks/useVoiceInput';
 import AskQuestionPicker from './AskQuestionPicker';
 import AutoEffortToggle from './AutoEffortToggle';
 import EffortPicker from './EffortPicker';
@@ -278,6 +280,38 @@ export default function Composer({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   };
+
+  /**
+   * Dictated words join the draft as Soniox confirms them, so the box fills
+   * while you are still talking rather than all at once at the end.
+   *
+   * Their tokens carry their own leading spaces, which is what makes plain
+   * concatenation correct here. The one exception is the first fragment of an
+   * empty box, which would otherwise start with a space.
+   */
+  // `setText` writes through to instance state, so there is no functional
+  // update form to read the previous value from. Soniox confirms fragments in
+  // bursts, and two arriving before React re-renders would both close over the
+  // same stale `text` — the second silently discarding the first. The ref is
+  // updated synchronously, so consecutive fragments accumulate.
+  const draftRef = useRef(text);
+  useEffect(() => {
+    draftRef.current = text;
+  }, [text]);
+
+  const appendDictation = (chunk: string) => {
+    const next = draftRef.current
+      ? draftRef.current + chunk
+      : chunk.replace(/^\s+/, '');
+    draftRef.current = next;
+    setText(next);
+    const el = taRef.current;
+    if (el) requestAnimationFrame(() => autoGrow(el));
+  };
+
+  // No useCallback needed: the hook holds this in a ref precisely so a caller
+  // rebuilding it each render cannot restart the microphone mid-sentence.
+  const voice = useVoiceInput({ onFinalText: appendDictation });
 
   const onPickImages = () => {
     fileRef.current?.click();
@@ -531,6 +565,29 @@ export default function Composer({
         disabled={disabled || isAwaitingAnswer || busyWithSuggestion}
         className="w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:opacity-60"
       />
+      {/* Unconfirmed words, shown but never inserted. Soniox revises these
+          right up until it marks them final, so writing them into the textarea
+          would make the caret jump around under the user's cursor. */}
+      {(voice.interim || voice.error) && (
+        <div className="px-2 pb-1 text-[11px] leading-snug">
+          {voice.error ? (
+            <span className="text-red-300">
+              {voice.error}{' '}
+              <button
+                type="button"
+                onClick={voice.clearError}
+                className="underline underline-offset-2 hover:no-underline"
+              >
+                dismiss
+              </button>
+            </span>
+          ) : (
+            <span className="italic text-muted-foreground/60">
+              {voice.interim}
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2 px-1">
         {/* One swipeable row on a phone rather than three wrapped ones. These
             pills are ~500px of nowrap content; wrapping them at 390px eats
@@ -575,6 +632,36 @@ export default function Composer({
           >
             <ImageIcon className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Image</span>
+          </button>
+          <button
+            type="button"
+            onClick={voice.toggle}
+            disabled={disabled || streaming || voice.status === 'stopping'}
+            className={cn(
+              ghostBtn,
+              voice.isActive &&
+                'border-red-400/50 bg-red-500/10 text-red-200 hover:bg-red-500/20',
+            )}
+            title={
+              voice.status === 'listening'
+                ? 'Stop dictation'
+                : 'Dictate — Romanian and English, switch freely'
+            }
+            aria-label={
+              voice.status === 'listening' ? 'Stop dictation' : 'Start dictation'
+            }
+            aria-pressed={voice.isActive}
+          >
+            {voice.status === 'starting' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Mic
+                className={cn('h-3.5 w-3.5', voice.isActive && 'animate-pulse')}
+              />
+            )}
+            <span className="hidden sm:inline">
+              {voice.status === 'listening' ? 'Listening' : 'Voice'}
+            </span>
           </button>
           <button
             type="button"
