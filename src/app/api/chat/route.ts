@@ -175,6 +175,26 @@ const POST_TURN_GRACE_MS = 150;
  * a genuinely dead session still releases the stream; Stop cancels it sooner.
  */
 const SYNTHETIC_TURN_GRACE_MS = 10 * 60_000;
+
+/**
+ * Grace applied when the LAST background task reports in while the model is
+ * idle — again instead of the 150 ms above.
+ *
+ * `task_notification` is not the end of the work, it is the thing that wakes
+ * the model to react to it: the CLI starts a fresh turn to read the agent's
+ * result, and that turn calls tools. Those calls are permissioned through
+ * `canUseTool` on this stream, so collapsing to the short grace the instant the
+ * notification lands closes the input out from under the turn it just caused.
+ * The tool call then has no permission channel and the CLI falls back to its
+ * standard refusal — "The user doesn't want to take this action right now" —
+ * which is indistinguishable from a real rejection, so it reads as the app
+ * denying tools by itself while the user pressed nothing.
+ *
+ * Observed with four `Agent` subagents: all four completed, and the first two
+ * tool calls of the waking turn (an MCP notebook write, then a ToolSearch) were
+ * both refused. Bounded, and any later `result` re-arms the normal grace.
+ */
+const TASK_WAKE_GRACE_MS = 10 * 60_000;
 /**
  * Grace applied while a BACKGROUND TASK (async subagent, backgrounded Bash) is
  * still running.
@@ -1507,6 +1527,13 @@ export async function POST(req: NextRequest) {
           prompt: next.prompt,
           images: next.userImages,
         });
+        // A turn is starting, so the stream is needed again. Without this a
+        // timer armed while the model was idle keeps counting and can close the
+        // input mid-turn, which costs that turn its permission channel.
+        if (closingTimer) {
+          clearTimeout(closingTimer);
+          closingTimer = null;
+        }
         needsNewTurn = false;
       };
 
@@ -2049,10 +2076,12 @@ export async function POST(req: NextRequest) {
                 status: asString(rec.status) ?? 'completed',
                 summary: asString(rec.summary) ?? '',
               });
-              // Last task done and the model is already idle: fall back to the
-              // normal short grace instead of sitting on the long one.
+              // Last task done and the model is already idle. Step off the long
+              // agent grace, but not all the way to 150 ms: this notification is
+              // what wakes the model to read the result, and that turn needs the
+              // stream for its own tool calls. See TASK_WAKE_GRACE_MS.
               if (liveTasks.size === 0 && liveShellTasks.size === 0 && needsNewTurn) {
-                scheduleIdleClose(POST_TURN_GRACE_MS);
+                scheduleIdleClose(TASK_WAKE_GRACE_MS);
               }
               continue;
             }
