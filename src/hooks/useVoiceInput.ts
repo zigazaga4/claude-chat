@@ -39,6 +39,24 @@ type SonioxToken = {
   language?: string;
 };
 
+/**
+ * Control markers, not speech.
+ *
+ * `enable_endpoint_detection` makes Soniox emit `<end>` at every utterance
+ * boundary, and `<fin>` once the stream is done. Both arrive as ordinary
+ * entries in `tokens` with `is_final` set, so anything that concatenates token
+ * text blindly types them straight into the composer — which is exactly what
+ * happened here.
+ *
+ * `<end>` is dropped rather than kept, but it still carries meaning: it is the
+ * seam between one utterance and the next. Soniox usually leads a word with its
+ * own space, so the seam is normally already spaced — `boundaryPendingRef`
+ * exists only for when it is not, and it checks before inserting so the common
+ * case never doubles up.
+ */
+const ENDPOINT_MARKER = '<end>';
+const FINISHED_MARKER = '<fin>';
+
 type SonioxMessage = {
   tokens?: SonioxToken[];
   finished?: boolean;
@@ -99,6 +117,13 @@ export function useVoiceInput({
     onFinalRef.current = onFinalText;
   }, [onFinalText]);
 
+  /**
+   * An `<end>` marker was seen and the words it separates have not arrived yet.
+   * Lives across messages because the marker routinely lands in a message of
+   * its own, after the preceding words were already flushed.
+   */
+  const boundaryPendingRef = useRef(false);
+
   /** Release the microphone and socket. Safe to call from any state. */
   const release = useCallback(() => {
     const rec = recRef.current;
@@ -125,12 +150,14 @@ export function useVoiceInput({
     }
 
     setInterim('');
+    boundaryPendingRef.current = false;
     setStatus('idle');
   }, []);
 
   const start = useCallback(async () => {
     setError(null);
     setInterim('');
+    boundaryPendingRef.current = false;
     setStatus('starting');
 
     let stream: MediaStream;
@@ -230,10 +257,19 @@ export function useVoiceInput({
       let confirmed = '';
       let pending = '';
       for (const t of msg.tokens ?? []) {
+        if (t.text === FINISHED_MARKER) continue;
+        if (t.text === ENDPOINT_MARKER) {
+          boundaryPendingRef.current = true;
+          continue;
+        }
         if (t.is_final) confirmed += t.text;
         else pending += t.text;
       }
-      if (confirmed) onFinalRef.current(confirmed);
+      if (confirmed) {
+        if (boundaryPendingRef.current && !/^\s/.test(confirmed)) confirmed = ` ${confirmed}`;
+        boundaryPendingRef.current = false;
+        onFinalRef.current(confirmed);
+      }
       setInterim(pending);
 
       if (msg.finished) release();
