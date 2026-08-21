@@ -23,6 +23,19 @@ cd "$(dirname "$0")/.."
 
 PORT="${PORT:-3000}"
 
+# Provider API keys. `next start` does not read .env.local (see
+# src/server/secretSource.ts), and providers.ts takes its credentials straight
+# from process.env — so without this the keys exist only when pm2 happens to
+# have inherited them from an interactive shell. After a reboot it has not:
+# `pm2 startup` installs a launchd job, and launchd never reads ~/.zshrc.
+# Sourcing here is what makes the keys survive a restart.
+if [ -f .env.local ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.local
+  set +a
+fi
+
 # Escape hatch for contexts that should not touch the tunnel — the Electron
 # wrapper starts its own server on a random port, and enabling serve for that
 # port would point the public hostname at a server that is about to disappear.
