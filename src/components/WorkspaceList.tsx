@@ -5,11 +5,13 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
+  Ghost,
   Globe,
   Loader2,
   LogOut,
   MessageSquarePlus,
   NotebookPen,
+  Plug,
   Plus,
   RefreshCw,
   Sparkles,
@@ -18,9 +20,11 @@ import {
 import { cn } from '@/lib/cn';
 import { parseCwd, shortLabel } from '@/lib/cwd';
 import type { ChatMessage } from '@/lib/types';
+import { DEFAULT_BACKEND, type ChatBackend } from '@/lib/backends';
 import { useInstances } from '@/state/instances';
 import ConnectSshModal from './ConnectSshModal';
 import FolderPicker from './FolderPicker';
+import McpServersModal from './McpServersModal';
 import NotebookModal from './NotebookModal';
 import RemoteFolderPicker from './RemoteFolderPicker';
 
@@ -47,6 +51,8 @@ type ConversationRow = {
   messageCount: number;
   source: 'claude-chat' | 'sdk';
   origin?: 'local' | 'ssh';
+  /** Engine that owns the conversation. Absent on pre-upgrade rows. */
+  backend?: ChatBackend;
 };
 
 type Tab = 'local' | 'ssh';
@@ -164,6 +170,10 @@ export default function WorkspaceList() {
   const [notebookFor, setNotebookFor] = useState<
     { id: string; cwd: string; label: string } | null
   >(null);
+  /** Folder whose MCP servers are being managed (null = closed). */
+  const [mcpFor, setMcpFor] = useState<{ cwd: string; label: string } | null>(
+    null,
+  );
   const [loginByCwd, setLoginByCwd] = useState<Record<string, LoginPhase>>({});
   const fetchedCwdsRef = useRef<Set<string>>(new Set());
   const autoLoginAttemptedRef = useRef<Set<string>>(new Set());
@@ -381,11 +391,16 @@ export default function WorkspaceList() {
         hasMoreOlder: boolean;
       };
       patch(active.id, { cwd });
-      openConversation(active.id, row.id, {
-        messages: data.messages,
-        oldestSeq: data.oldestSeq,
-        hasMoreOlder: data.hasMoreOlder,
-      });
+      openConversation(
+        active.id,
+        row.id,
+        {
+          messages: data.messages,
+          oldestSeq: data.oldestSeq,
+          hasMoreOlder: data.hasMoreOlder,
+        },
+        row.backend ?? DEFAULT_BACKEND,
+      );
       expand(cwd);
       void loadWorkspaces();
     } catch {
@@ -395,9 +410,9 @@ export default function WorkspaceList() {
     }
   };
 
-  const openNewIn = (cwd: string) => {
+  const openNewIn = (cwd: string, opts?: { ephemeral?: boolean }) => {
     patch(active.id, { cwd });
-    openNewConversation(active.id);
+    openNewConversation(active.id, opts);
     expand(cwd);
   };
 
@@ -737,7 +752,7 @@ export default function WorkspaceList() {
                                                 }}
                                                 title="View / edit notebook"
                                                 aria-label="View or edit this conversation's notebook"
-                                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-emerald-300 focus-visible:opacity-100 group-hover/conv:opacity-100"
+                                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-emerald-300 focus-visible:opacity-100 group-hover/conv:opacity-100 touch:opacity-100"
                                               >
                                                 <NotebookPen className="h-3 w-3" />
                                               </button>
@@ -751,14 +766,17 @@ export default function WorkspaceList() {
                                       No conversations yet.
                                     </div>
                                   )}
-                                  <button
-                                    type="button"
-                                    onClick={() => openNewIn(w.cwd)}
-                                    className="mt-1.5 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-blue-400/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
-                                  >
-                                    <MessageSquarePlus className="h-3 w-3" />
-                                    New chat
-                                  </button>
+                                  <div className="mt-1.5 flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => openNewIn(w.cwd)}
+                                      className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-blue-400/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
+                                    >
+                                      <MessageSquarePlus className="h-3 w-3" />
+                                      New chat
+                                    </button>
+                                    <ThrowawayButton onClick={() => openNewIn(w.cwd, { ephemeral: true })} />
+                                  </div>
                                 </div>
                               )}
                             </li>
@@ -960,7 +978,7 @@ export default function WorkspaceList() {
                                         }}
                                         title="View / edit notebook"
                                         aria-label="View or edit this conversation's notebook"
-                                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-300 focus-visible:opacity-100 group-hover/conv:opacity-100"
+                                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-300 focus-visible:opacity-100 group-hover/conv:opacity-100 touch:opacity-100"
                                       >
                                         <NotebookPen className="h-3 w-3" />
                                       </button>
@@ -982,6 +1000,19 @@ export default function WorkspaceList() {
                             >
                               <MessageSquarePlus className="h-3 w-3" />
                               New chat
+                            </button>
+                            <ThrowawayButton onClick={() => openNewIn(w.cwd, { ephemeral: true })} />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMcpFor({ cwd: w.cwd, label: shortLabel(w.cwd) })
+                              }
+                              className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                              title="MCP servers for this folder"
+                              aria-label="Manage MCP servers for this folder"
+                            >
+                              <Plug className="h-3 w-3" />
+                              MCP
                             </button>
                             {isSsh && (
                               <button
@@ -1012,6 +1043,18 @@ export default function WorkspaceList() {
           cwd={notebookFor.cwd}
           label={notebookFor.label}
           onClose={() => setNotebookFor(null)}
+        />
+      )}
+
+      {mcpFor && (
+        // Keyed by folder so switching folders remounts with fresh state
+        // rather than showing the previous folder's list mid-fetch.
+        <McpServersModal
+          key={mcpFor.cwd}
+          open
+          cwd={mcpFor.cwd}
+          label={mcpFor.label}
+          onClose={() => setMcpFor(null)}
         />
       )}
 
@@ -1066,6 +1109,24 @@ export default function WorkspaceList() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Compact companion to "New chat": starts a throwaway conversation in the same
+ * folder — never listed, deleted the moment the tab moves on.
+ */
+function ThrowawayButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Throwaway chat — never listed, deleted when you leave it"
+      aria-label="New throwaway chat"
+      className="inline-flex shrink-0 items-center justify-center rounded-md border border-dashed border-amber-400/40 bg-amber-500/[0.08] px-1.5 py-1 text-amber-300 transition-colors hover:border-amber-400/70 hover:bg-amber-500/20"
+    >
+      <Ghost className="h-3 w-3" />
+    </button>
   );
 }
 

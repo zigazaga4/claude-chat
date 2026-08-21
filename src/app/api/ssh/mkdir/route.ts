@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
   // Resolve "~" / "~/foo" against the live home dir for the parent.
   let parentAbs = parent;
   if (parentAbs === '~' || parentAbs.startsWith('~')) {
-    const home = (await host.exec('printf %s "$HOME"')).stdout.trim() || '/';
+    const home = await host.homeDir();
     parentAbs = parentAbs === '~' ? home : home + parentAbs.slice(1);
   }
   if (!parentAbs.startsWith('/')) parentAbs = '/' + parentAbs;

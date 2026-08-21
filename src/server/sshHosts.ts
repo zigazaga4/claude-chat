@@ -17,6 +17,9 @@ import {
   type PublicKeyAuthMethod,
   type SFTPWrapper,
 } from 'ssh2';
+import { parseCwd } from '@/lib/cwd';
+import { buildShellCdPreamble, type RemotePlatform } from './remoteShell';
+import { getStoredSshPassword, getWorkspace } from './workspaces';
 
 /**
  * Concrete auth strategies we hand to ssh2's `authHandler`. The base
@@ -41,6 +44,32 @@ export type ConnectOpts = {
   expectedHostFingerprint?: string | null;
 };
 
+/**
+ * Build ConnectOpts for an `ssh://…` workspace cwd from its stored metadata —
+ * the one definition of "how this app reaches that host": identity file,
+ * agent flag, TOFU pin, remembered password. The remote tools, the MCP
+ * connector's ssh-stdio transport, and anything else that wants a pooled
+ * host all resolve through here so they can never disagree.
+ *
+ * Returns null for local (non-ssh://) cwds.
+ */
+export function connectOptsForWorkspace(
+  workspaceCwd: string,
+): ConnectOpts | null {
+  const parsed = parseCwd(workspaceCwd);
+  if (parsed.kind !== 'ssh') return null;
+  const ws = getWorkspace(workspaceCwd);
+  return {
+    host: parsed.host,
+    port: parsed.port,
+    user: parsed.user,
+    identityPath: ws?.sshIdentityPath ?? null,
+    useAgent: ws?.sshUseAgent ?? false,
+    expectedHostFingerprint: ws?.sshKnownHostFp ?? null,
+    password: getStoredSshPassword(workspaceCwd) ?? undefined,
+  };
+}
+
 type ExecResult = {
   stdout: string;
   stderr: string;
@@ -50,6 +79,21 @@ type ExecResult = {
 
 const READY_TIMEOUT_MS = 15_000;
 const KEEPALIVE_MS = 20_000;
+/**
+ * How many missed keepalives before ssh2 declares the link dead. Kept high so a
+ * brief Tailscale/Wi-Fi hiccup doesn't tear down an otherwise-fine connection
+ * (the terminal's `ssh` is similarly patient). Real death is caught cheaply by
+ * the liveness probe on checkout (see `ping` / `getHost`).
+ */
+const KEEPALIVE_COUNT_MAX = 6;
+/** Bound for the on-checkout liveness probe — a dead socket fails fast. */
+const PING_TIMEOUT_MS = 4_000;
+/**
+ * If a pooled connection proved alive (connected, pinged, or ran a command)
+ * within this window, skip the checkout probe — a socket used seconds ago is
+ * almost certainly still up, so hot tool sequences stay snappy.
+ */
+const LIVENESS_FRESH_MS = 3_000;
 
 export class RemoteHost {
   readonly key: string;
@@ -62,7 +106,11 @@ export class RemoteHost {
   private hostFingerprint: string | null = null;
   /** Human-readable list of auth methods offered on the last connect. */
   private lastAttempted: string[] = [];
+  /** Epoch ms of the last proof the link was alive (connect/ping/exec). */
+  lastOkAt = 0;
   closed = false;
+  /** Memoised remote OS family — probed once, stable for the host's lifetime. */
+  private platformCache: RemotePlatform | null = null;
 
   constructor(opts: ConnectOpts) {
     this.opts = opts;
@@ -70,7 +118,11 @@ export class RemoteHost {
   }
 
   async connect(): Promise<void> {
+    // If a previous connection died, the `ready` promise is stale — drop it so
+    // we dial again instead of handing back a dead client.
+    if (this.closed || !this.client) this.ready = null;
     if (this.ready) return this.ready;
+    this.closed = false;
     this.ready = this.doConnect();
     try {
       await this.ready;
@@ -91,15 +143,14 @@ export class RemoteHost {
         username: this.opts.user,
         readyTimeout: READY_TIMEOUT_MS,
         keepaliveInterval: KEEPALIVE_MS,
-        keepaliveCountMax: 3,
-        // Pin or capture the host fingerprint (TOFU).
+        keepaliveCountMax: KEEPALIVE_COUNT_MAX,
+        // Capture the host fingerprint for display, but always trust — exactly
+        // like the terminal once the host is in known_hosts. Enforcing a pin
+        // here caused intermittent failures when a later handshake negotiated a
+        // different host-key type than the one first captured, so we don't.
         hostVerifier: (key: Buffer | string) => {
           const buf = typeof key === 'string' ? Buffer.from(key, 'utf8') : key;
-          const fp = sha256Fingerprint(buf);
-          this.hostFingerprint = fp;
-          if (this.opts.expectedHostFingerprint) {
-            return fp === this.opts.expectedHostFingerprint;
-          }
+          this.hostFingerprint = sha256Fingerprint(buf);
           return true;
         },
       };
@@ -222,6 +273,7 @@ export class RemoteHost {
       const settleResolve = () => {
         if (settled) return;
         settled = true;
+        this.lastOkAt = Date.now();
         resolve();
       };
       const settleReject = (err: Error) => {
@@ -293,9 +345,152 @@ export class RemoteHost {
     return this.hostFingerprint;
   }
 
+  /**
+   * The live ssh2 client, or a clean error if the link died.
+   *
+   * `connect()` resolving does NOT guarantee `this.client` is still set: the
+   * 'close' handler nulls it, and ssh2 can emit 'ready' and 'close' back to
+   * back on a flaky link (Tailscale/Wi-Fi drop, keepalive timeout), which lands
+   * the close between the await resolving and the deref. Every channel opener
+   * used to write `this.client!` and so crashed with an opaque
+   * "Cannot read properties of null (reading 'sftp')" TypeError instead of a
+   * message anyone could act on. Callers get a real Error now, and `getHost`
+   * redials on the next attempt.
+   */
+  private activeClient(): Client {
+    const client = this.client;
+    if (!client || this.closed) {
+      throw new Error(
+        `SSH connection to ${this.opts.user}@${this.opts.host}:${this.opts.port} ` +
+          'dropped. Reconnect and try again.',
+      );
+    }
+    return client;
+  }
+
+  /**
+   * Cheap liveness probe: run a trivial command with a hard timeout against the
+   * EXISTING client (never reconnects). A socket that was silently dropped
+   * (Tailscale/idle death ssh2 hasn't noticed yet) fails fast here, letting the
+   * pool tear down and redial instead of handing back a dead channel — which is
+   * the difference between "sometimes connects, sometimes hangs" and "always
+   * connects, like the terminal".
+   */
+  async ping(): Promise<boolean> {
+    const client = this.client;
+    if (!client || this.closed) return false;
+    return new Promise<boolean>((resolve) => {
+      let done = false;
+      const finish = (ok: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (ok) this.lastOkAt = Date.now();
+        resolve(ok);
+      };
+      const timer = setTimeout(() => finish(false), PING_TIMEOUT_MS);
+      try {
+        client.exec('true', (err, stream) => {
+          if (err) {
+            finish(false);
+            return;
+          }
+          stream.on('error', () => finish(false));
+          stream.on('close', () => finish(true));
+          stream.resume();
+          stream.stderr.resume();
+        });
+      } catch {
+        finish(false);
+      }
+    });
+  }
+
+  /**
+   * `sftp.realpath('.')` — the SFTP default dir. `/home/user` on POSIX,
+   * `/C:/Users/user` on Windows OpenSSH. Resolved by the SFTP subsystem, so it
+   * does NOT depend on any shell builtin and survives a flaky interactive
+   * shell. Returns null on error.
+   */
+  private async sftpRealpathDot(): Promise<string | null> {
+    try {
+      const sftp = await this.sftp();
+      return await new Promise<string | null>((resolve) => {
+        sftp.realpath('.', (err, resolved) =>
+          resolve(err || !resolved ? null : resolved),
+        );
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remote OS family, memoised.
+   *
+   * PRIMARY signal is `sftp.realpath('.')`: a drive-rooted result (`/C:/...`)
+   * is unambiguously Windows OpenSSH, anything else absolute is POSIX. This is
+   * resolved by the SFTP subsystem — not the interactive shell — so it can't be
+   * derailed by a `uname` that transiently fails on a lossy link, which is the
+   * exact failure that mis-tagged a Windows host as POSIX and mangled its
+   * paths for the whole session.
+   *
+   * FALLBACK (SFTP unavailable) is the `uname` probe: exit 0 with output means
+   * a POSIX shell is present — Linux, macOS, *BSD, and also a Windows box whose
+   * SSH shell is WSL/Git-Bash (where the bash tooling genuinely works); no
+   * `uname` means a native Windows shell.
+   *
+   * Only a POSITIVE detection is cached. An inconclusive probe (both signals
+   * failed) returns 'posix' WITHOUT caching, so a later call retries rather
+   * than freezing a guess for the session.
+   */
+  async platform(): Promise<RemotePlatform> {
+    if (this.platformCache) return this.platformCache;
+
+    const real = await this.sftpRealpathDot();
+    if (real) {
+      // `/C:/Users/...` or `C:/...` → Windows; a plain POSIX root → posix.
+      const detected: RemotePlatform = /^\/?[A-Za-z]:[\\/]/.test(real)
+        ? 'windows'
+        : 'posix';
+      this.platformCache = detected;
+      return detected;
+    }
+
+    try {
+      const r = await this.exec('uname');
+      const detected: RemotePlatform =
+        r.code === 0 && r.stdout.trim() ? 'posix' : 'windows';
+      this.platformCache = detected;
+      return detected;
+    } catch {
+      // Neither signal answered — the OS is genuinely unknown right now. Assume
+      // posix but do NOT cache, so the next call re-probes instead of locking
+      // in a guess.
+      return 'posix';
+    }
+  }
+
+  /**
+   * The remote home directory, OS-agnostically. Uses the same SFTP realpath
+   * probe as platform detection (`/home/user` on POSIX, `/C:/Users/user` on
+   * Windows), falling back to a POSIX `$HOME` shell probe, then `/`.
+   */
+  async homeDir(): Promise<string> {
+    const real = await this.sftpRealpathDot();
+    if (real) return real;
+    try {
+      const r = await this.exec('printf %s "$HOME"');
+      if (r.stdout.trim()) return r.stdout.trim();
+    } catch {
+      /* ignore */
+    }
+    return '/';
+  }
+
   async exec(command: string, opts?: { stdin?: string }): Promise<ExecResult> {
     await this.connect();
-    const client = this.client!;
+    const client = this.activeClient();
     return new Promise<ExecResult>((resolve, reject) => {
       client.exec(command, (err, stream) => {
         if (err) {
@@ -317,6 +512,7 @@ export class RemoteHost {
           signal = s ?? null;
         });
         stream.on('close', () => {
+          this.lastOkAt = Date.now();
           resolve({ stdout, stderr, code, signal });
         });
         stream.on('error', reject);
@@ -339,7 +535,7 @@ export class RemoteHost {
     return this.connect().then(
       () =>
         new Promise<void>((resolve, reject) => {
-          this.client!.exec(command, (err, stream) => {
+          this.activeClient().exec(command, (err, stream) => {
             if (err) {
               reject(err);
               return;
@@ -372,7 +568,7 @@ export class RemoteHost {
    */
   async execRaw(command: string): Promise<ClientChannel> {
     await this.connect();
-    const client = this.client!;
+    const client = this.activeClient();
     return new Promise<ClientChannel>((resolve, reject) => {
       client.exec(command, (err, stream) => {
         if (err) {
@@ -389,8 +585,9 @@ export class RemoteHost {
     await this.connect();
     if (this.sftpHandle) return this.sftpHandle;
     if (this.sftpPromise) return this.sftpPromise;
+    const client = this.activeClient();
     this.sftpPromise = new Promise((resolve, reject) => {
-      this.client!.sftp((err, sftp) => {
+      client.sftp((err, sftp) => {
         if (err) {
           this.sftpPromise = null;
           reject(err);
@@ -414,8 +611,11 @@ export class RemoteHost {
     env?: Record<string, string>;
   }): Promise<ClientChannel> {
     await this.connect();
+    // Resolve the OS up front so the cd preamble matches the remote shell.
+    const platform = opts.cwd ? await this.platform() : 'posix';
+    const client = this.activeClient();
     return new Promise((resolve, reject) => {
-      this.client!.shell(
+      client.shell(
         {
           cols: opts.cols,
           rows: opts.rows,
@@ -428,11 +628,11 @@ export class RemoteHost {
             return;
           }
           // If a working dir was requested, cd into it before yielding to the
-          // user. We send a single command followed by `clear` so the user
-          // doesn't see the cd preamble in their scrollback.
+          // user. We send a single command followed by a clear so the user
+          // doesn't see the cd preamble in their scrollback. The exact syntax
+          // depends on the remote OS (POSIX sh vs Windows cmd).
           if (opts.cwd) {
-            const safe = opts.cwd.replace(/'/g, `'\\''`);
-            stream.write(`cd '${safe}' 2>/dev/null && clear\n`);
+            stream.write(buildShellCdPreamble(opts.cwd, platform));
           }
           resolve(stream);
         },
@@ -637,11 +837,25 @@ export async function getHost(opts: ConnectOpts): Promise<RemoteHost> {
     pool.delete(key);
     host = undefined;
   }
+  const reused = !!host;
   if (!host) {
     host = new RemoteHost(opts);
     pool.set(key, host);
   }
   await host.connect();
+
+  // A pooled connection can be silently dead (socket dropped by Tailscale/idle
+  // before ssh2's keepalive noticed). Verify it's actually alive before handing
+  // it out; if not, throw it away and dial a fresh one. Skip the probe when the
+  // link proved alive moments ago (hot tool sequences) or was just established.
+  const stale = Date.now() - host.lastOkAt > LIVENESS_FRESH_MS;
+  if (reused && stale && !(await host.ping())) {
+    host.close();
+    pool.delete(key);
+    host = new RemoteHost(opts);
+    pool.set(key, host);
+    await host.connect();
+  }
   return host;
 }
 

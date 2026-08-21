@@ -26,16 +26,29 @@ export function LatestToolProvider({
   children: ReactNode;
 }) {
   const latestId = useMemo<string | undefined>(() => {
-    let latest: string | undefined;
-    for (const m of messages) {
+    /*
+     * Walk backwards and stop at the first hit.
+     *
+     * The answer is by definition the LAST matching block, so scanning forward
+     * from the beginning visited every block in the transcript and discarded
+     * all but the final match. That cost lands in the hot path: `messages` is
+     * a freshly built array on every streaming token, so this memo recomputes
+     * per token — tens of thousands of block visits a second on a long
+     * conversation, on the main thread, while the UI is trying to paint.
+     *
+     * Backwards, it almost always finishes within the newest message.
+     */
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
       if (m.role !== 'assistant') continue;
-      for (const block of m.blocks) {
-        if (block.type !== 'tool_use') continue;
-        if (!AUTO_OPEN_TOOLS.has(block.name)) continue;
-        latest = block.id;
+      for (let j = m.blocks.length - 1; j >= 0; j--) {
+        const block = m.blocks[j];
+        if (block.type === 'tool_use' && AUTO_OPEN_TOOLS.has(block.name)) {
+          return block.id;
+        }
       }
     }
-    return latest;
+    return undefined;
   }, [messages]);
 
   return (

@@ -152,6 +152,18 @@ export function shortPath(p: string, max = 60): string {
   return `…${slash >= 0 ? tail.slice(slash) : tail}`;
 }
 
+/**
+ * How much of one block's text is put in the DOM before it is cut.
+ *
+ * `max-h-72` bounds only the *visible* height — the whole string still becomes
+ * DOM nodes and still costs layout and memory. A single stored message in this
+ * app reaches 4.7 MB of tool input, 1,026 messages exceed 100 KB, and nothing
+ * unmounts as the transcript grows, so an afternoon of use turns into hundreds
+ * of megabytes of live nodes in the tab. 8,000 characters is far more than
+ * fits in the collapsed box and still lets the rest be opened on demand.
+ */
+const RENDER_CHAR_CAP = 8_000;
+
 export function CodeBlock({
   children,
   className,
@@ -161,16 +173,36 @@ export function CodeBlock({
   className?: string;
   maxHeight?: string;
 }) {
+  // Only plain strings can be measured and cut safely; anything richer is
+  // already structured content and is left alone.
+  const text = typeof children === 'string' ? children : null;
+  const oversized = text != null && text.length > RENDER_CHAR_CAP;
+  const [expanded, setExpanded] = useState(false);
+  const shown = oversized && !expanded ? text.slice(0, RENDER_CHAR_CAP) : children;
+
   return (
-    <pre
-      className={cn(
-        'scrollbar-thin overflow-auto whitespace-pre-wrap rounded-md border border-border/40 bg-background/70 p-2 font-mono text-[11.5px] leading-relaxed',
-        maxHeight,
-        className,
+    <>
+      <pre
+        className={cn(
+          'scrollbar-thin overflow-auto whitespace-pre-wrap rounded-md border border-border/40 bg-background/70 p-2 font-mono text-[11.5px] leading-relaxed',
+          maxHeight,
+          className,
+        )}
+      >
+        {shown}
+      </pre>
+      {oversized && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[10px] text-blue-300/80 underline-offset-2 hover:text-blue-200 hover:underline"
+        >
+          {expanded
+            ? 'Collapse'
+            : `Show all — ${(text.length / 1024).toFixed(0)} KB hidden`}
+        </button>
       )}
-    >
-      {children}
-    </pre>
+    </>
   );
 }
 

@@ -1,8 +1,9 @@
 /**
  * SDK MCP server exposing a single `notebook` tool — the model's private,
- * per-conversation scratchpad. Bound to the live conversation via a getter
- * (the session id isn't known until the SDK emits it), so writes always land
- * on the conversation the model is actually in.
+ * per-conversation scratchpad. Storage is injected as read/write closures so
+ * the tool is always available: the caller routes reads/writes to the DB once
+ * the conversation id is known, or to an in-memory buffer before that (flushed
+ * to the DB the moment the SDK emits the session id).
  */
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
@@ -11,8 +12,6 @@ import {
   applyEdit,
   lineCount,
   numbered,
-  readNotebook,
-  writeNotebook,
   type NotebookEditAction,
 } from './notebook';
 
@@ -33,22 +32,27 @@ function show(content: string, prefix: string): ToolResult {
 }
 
 export type NotebookToolContext = {
-  /** Resolves the active conversation id at call time (null before session start). */
-  getConversationId: () => string | null;
-  /** Monotonic-ish timestamp source (kept injectable for testing). */
-  now?: () => number;
+  /**
+   * Read the current notebook text. The caller decides where it comes from —
+   * the DB once the conversation id is known, or an in-memory buffer before
+   * that — so the tool is ALWAYS available, even on the very first turn.
+   */
+  read: () => string;
+  /** Persist the new notebook text (DB or buffer, caller's choice). */
+  write: (content: string) => void;
 };
 
 const DESCRIPTION = `Your private, per-conversation notebook. Its contents are injected into your system prompt every turn, so anything written here stays available to you later in this conversation even after the surrounding messages drop out of context.
 
-Use it on your own initiative, without being asked, to record durable things you will need again later and would otherwise forget: facts, constraints, decisions already made, the user's stated preferences and conventions, the current state of what you are working on, and conclusions you have reached. Anything the user tells you to remember is a mandatory write.
+Use it on your own initiative to record durable KNOWLEDGE worth keeping — established facts, specifics you discovered and would otherwise have to re-derive, hard constraints and rules you must honor, the user's stated preferences and conventions, key decisions, and important details about the system you are working on. Anything the user tells you to remember is a mandatory write.
 
-Keep it accurate and current — it is a living document, not an append-only log: when a note becomes outdated or wrong, modify or delete it instead of leaving it. Keep each line short and self-contained. Do not store secrets you do not need or transient chatter.
+Record knowledge, not work. This is NOT a to-do list, a task tracker, a plan, or a running log — never put tasks, steps, checklists, "next I will…", or progress updates here. Only durable facts and constraints that stay useful later belong in the notebook.
+
+Keep it lean. It is a small, living reference, not an append-only dump: add a note only when it has lasting value, keep each line short and self-contained, and actively delete or rewrite entries the moment they go stale, get resolved, or stop being relevant. A short, current notebook is the goal — prune aggressively, and do not store secrets you do not need.
 
 The notebook is line-numbered. Before any edit that targets existing lines (replace, insert, delete) call \`view\` first, because line numbers shift after every edit. These notes are visible only to you and only in this conversation.`;
 
 export function createNotebookMcpServer(ctx: NotebookToolContext) {
-  const now = ctx.now ?? (() => Date.now());
   return createSdkMcpServer({
     name: 'notebook',
     version: '0.1.0',
@@ -83,11 +87,7 @@ export function createNotebookMcpServer(ctx: NotebookToolContext) {
             .describe('1-based last line (inclusive) for replace/delete. Defaults to `start`.'),
         },
         async (args): Promise<ToolResult> => {
-          const id = ctx.getConversationId();
-          if (!id) {
-            return err('Notebook is not available yet — no active conversation. Try again after the first response.');
-          }
-          const current = readNotebook(id);
+          const current = ctx.read();
 
           if (args.action === 'view') {
             return ok(`Notebook (${lineCount(current)} line(s)):\n${numbered(current)}`);
@@ -100,7 +100,7 @@ export function createNotebookMcpServer(ctx: NotebookToolContext) {
           });
           if (!res.ok) return err(res.error);
 
-          writeNotebook(id, res.content, now());
+          ctx.write(res.content);
           return show(res.content, res.summary);
         },
       ),

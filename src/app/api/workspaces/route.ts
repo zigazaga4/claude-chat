@@ -12,22 +12,22 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const workspaces = listWorkspaces();
-  // Build a set of "(user|host|port|identity|agent)" keys that are currently
-  // live, then mark each SSH workspace accordingly.
-  const liveKeys = new Set(listConnectedHosts().map((h) => h.key));
+  // "Connected" means there is a live SSH connection to this HOST (user@host:port)
+  // — NOT to one exact auth tuple. The pool key also encodes identity file +
+  // agent, which legitimately differ between how a login was made (e.g. the
+  // "Connect with SSH" / tryAuto path connects with no identity + agent off)
+  // and what the workspace has saved. Matching the full key made a successful
+  // connection read as "disconnected", wedging the UI on the login panel. Match
+  // on host identity only so the badge reflects reality.
+  const liveHosts = new Set(
+    listConnectedHosts().map((h) => `${h.opts.user}|${h.opts.host}|${h.opts.port}`),
+  );
   const decorated = workspaces.map((w) => {
     if (w.kind !== 'ssh') return { ...w, sshConnected: false };
     try {
       const p = parseCwd(w.cwd);
       if (p.kind !== 'ssh') return { ...w, sshConnected: false };
-      const key = [
-        p.user,
-        p.host,
-        p.port,
-        w.sshIdentityPath ?? '',
-        w.sshUseAgent ? 'agent' : '',
-      ].join('|');
-      return { ...w, sshConnected: liveKeys.has(key) };
+      return { ...w, sshConnected: liveHosts.has(`${p.user}|${p.host}|${p.port}`) };
     } catch {
       return { ...w, sshConnected: false };
     }

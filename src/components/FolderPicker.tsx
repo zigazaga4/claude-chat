@@ -66,14 +66,14 @@ export default function FolderPicker({ open, initialPath, onClose, onSelect }: F
   if (typeof document === 'undefined') return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4" role="dialog" aria-modal>
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-xl overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="scrollbar-thin relative max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <button
             type="button"
             onClick={() => data?.parent && load(data.parent)}
@@ -99,7 +99,7 @@ export default function FolderPicker({ open, initialPath, onClose, onSelect }: F
               if (e.key === 'Enter') void load(path);
             }}
             spellCheck={false}
-            className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
+            className="min-w-[9rem] flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
             placeholder="/absolute/path"
           />
         </div>
@@ -122,7 +122,9 @@ export default function FolderPicker({ open, initialPath, onClose, onSelect }: F
                 <li key={e.path}>
                   <button
                     type="button"
-                    onDoubleClick={() => load(e.path)}
+                    // Single click already navigates, so the double-click
+                    // handler only ever fired a redundant second load — and on
+                    // touch it also invited a double-tap, which zooms the page.
                     onClick={() => load(e.path)}
                     className={cn(
                       'flex w-full items-center gap-2 px-3 py-2 text-left text-sm',
@@ -137,7 +139,7 @@ export default function FolderPicker({ open, initialPath, onClose, onSelect }: F
             </ul>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-3 py-2">
           <button
             type="button"
             onClick={onClose}

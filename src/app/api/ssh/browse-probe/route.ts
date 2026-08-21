@@ -47,11 +47,11 @@ export async function GET(req: NextRequest) {
 
   let target = requested && requested.length > 0 ? requested : '~';
   if (target === '~' || target.startsWith('~')) {
-    const home = (await conn.exec('printf %s "$HOME"')).stdout.trim() || '/';
+    const home = await conn.homeDir();
     target = target === '~' ? home : home + target.slice(1);
   }
   if (!target.startsWith('/')) target = '/' + target;
-  const home = (await conn.exec('printf %s "$HOME"')).stdout.trim() || '/';
+  const home = await conn.homeDir();
 
   type ReadDirEntry = { filename: string; longname: string; attrs: { mode: number } };
   const sftp = await conn.sftp();

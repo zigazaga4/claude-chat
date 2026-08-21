@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, MessageSquarePlus, RefreshCw, Sparkles } from 'lucide-react';
+import { Ghost, Loader2, MessageSquarePlus, RefreshCw, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ChatMessage } from '@/lib/types';
+import { DEFAULT_BACKEND, type ChatBackend } from '@/lib/backends';
 import { useInstances } from '@/state/instances';
 
 type ConversationRow = {
@@ -15,6 +16,8 @@ type ConversationRow = {
   messageCount: number;
   source: 'claude-chat' | 'sdk';
   origin?: 'local' | 'ssh';
+  /** Engine that owns the conversation. Absent on pre-upgrade rows. */
+  backend?: ChatBackend;
 };
 
 function formatRelative(ms: number): string {
@@ -78,11 +81,16 @@ export default function ConversationPicker() {
         oldestSeq: number | null;
         hasMoreOlder: boolean;
       };
-      openConversation(active.id, row.id, {
-        messages: data.messages,
-        oldestSeq: data.oldestSeq,
-        hasMoreOlder: data.hasMoreOlder,
-      });
+      openConversation(
+        active.id,
+        row.id,
+        {
+          messages: data.messages,
+          oldestSeq: data.oldestSeq,
+          hasMoreOlder: data.hasMoreOlder,
+        },
+        row.backend ?? DEFAULT_BACKEND,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to open conversation');
       setOpeningId(null);
@@ -91,6 +99,10 @@ export default function ConversationPicker() {
 
   const onNew = () => {
     openNewConversation(active.id);
+  };
+
+  const onThrowaway = () => {
+    openNewConversation(active.id, { ephemeral: true });
   };
 
   if (!cwd) return null;
@@ -131,6 +143,25 @@ export default function ConversationPicker() {
           </span>
         </span>
         <Sparkles className="ml-auto h-3.5 w-3.5 text-blue-400/80 transition-opacity group-hover/new:opacity-100" />
+      </button>
+
+      <button
+        type="button"
+        onClick={onThrowaway}
+        title="Ask something quick — this chat is never saved to the list and is deleted when you leave it"
+        className="group/throw flex items-center gap-3 rounded-2xl border border-dashed border-amber-400/40 bg-amber-500/[0.06] px-4 py-2.5 text-left transition-all duration-200 hover:border-amber-400/70 hover:bg-amber-500/[0.12]"
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-dashed border-amber-400/50 bg-amber-500/10 text-amber-300">
+          <Ghost className="h-4 w-4" />
+        </span>
+        <span className="flex flex-col">
+          <span className="text-[13px] font-semibold tracking-tight text-amber-200">
+            Throwaway chat
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            Ask something quick — never listed, deleted when you leave
+          </span>
+        </span>
       </button>
 
       {error && (

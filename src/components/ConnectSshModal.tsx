@@ -49,11 +49,15 @@ type Props = {
 
 export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
   const [step, setStep] = useState<'config' | 'browse'>('config');
+  // The user types a literal ssh command; the server resolves it (incl.
+  // ~/.ssh/config aliases) into these concrete connection params.
+  const [command, setCommand] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState(22);
   const [user, setUser] = useState('');
   const [identityPath, setIdentityPath] = useState('');
-  const [useAgent, setUseAgent] = useState(true);
+  const [useAgent] = useState(true);
+  const [resolvedLabel, setResolvedLabel] = useState<string | null>(null);
   const [password, setPassword] = useState('');
   const [rememberPassword, setRememberPassword] = useState(true);
   const [testing, setTesting] = useState(false);
@@ -78,19 +82,48 @@ export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // Resolve the typed ssh command into concrete params, then test the
+  // connection with them — one click for the user.
   const onTest = async () => {
+    if (!command.trim()) return;
     setTesting(true);
     setError(null);
     setTestResult(null);
+    setResolvedLabel(null);
     try {
+      const pr = await fetch('/api/ssh/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      const pd = (await pr.json()) as {
+        ok?: boolean;
+        host?: string;
+        port?: number;
+        user?: string;
+        identityPath?: string | null;
+        label?: string;
+        error?: string;
+      };
+      if (!pd.ok || !pd.host || !pd.user) {
+        setError(pd.error ?? 'Could not understand that ssh command.');
+        return;
+      }
+      // Stash resolved params so the browse + connect steps reuse them.
+      setHost(pd.host);
+      setPort(pd.port && pd.port > 0 ? pd.port : 22);
+      setUser(pd.user);
+      setIdentityPath(pd.identityPath ?? '');
+      setResolvedLabel(pd.label ?? null);
+
       const res = await fetch('/api/ssh/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: host.trim(),
-          port,
-          user: user.trim(),
-          identityPath: identityPath.trim() || null,
+          host: pd.host,
+          port: pd.port && pd.port > 0 ? pd.port : 22,
+          user: pd.user,
+          identityPath: pd.identityPath ?? null,
           useAgent,
           password: password || undefined,
         }),
@@ -197,7 +230,7 @@ export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4"
       role="dialog"
       aria-modal
     >
@@ -206,8 +239,10 @@ export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-xl overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      {/* Scrolls inside itself once it outgrows the screen — this form is
+          taller than a phone viewport with the keyboard up. */}
+      <div className="scrollbar-thin relative max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           {step === 'browse' && (
             <button
               type="button"
@@ -226,16 +261,9 @@ export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
 
         {step === 'config' ? (
           <ConfigStep
-            host={host}
-            setHost={setHost}
-            port={port}
-            setPort={setPort}
-            user={user}
-            setUser={setUser}
-            identityPath={identityPath}
-            setIdentityPath={setIdentityPath}
-            useAgent={useAgent}
-            setUseAgent={setUseAgent}
+            command={command}
+            setCommand={setCommand}
+            resolvedLabel={resolvedLabel}
             password={password}
             setPassword={setPassword}
             rememberPassword={rememberPassword}
@@ -270,16 +298,9 @@ export default function ConnectSshModal({ open, onClose, onConnected }: Props) {
 }
 
 function ConfigStep(props: {
-  host: string;
-  setHost: (v: string) => void;
-  port: number;
-  setPort: (v: number) => void;
-  user: string;
-  setUser: (v: string) => void;
-  identityPath: string;
-  setIdentityPath: (v: string) => void;
-  useAgent: boolean;
-  setUseAgent: (v: boolean) => void;
+  command: string;
+  setCommand: (v: string) => void;
+  resolvedLabel: string | null;
   password: string;
   setPassword: (v: string) => void;
   rememberPassword: boolean;
@@ -291,52 +312,39 @@ function ConfigStep(props: {
   onAdvance: () => void;
   onCancel: () => void;
 }) {
-  const ready = !!props.host && !!props.user;
+  const ready = !!props.command.trim();
   return (
     <div className="space-y-3 px-4 py-4">
-      <div className="grid grid-cols-3 gap-2">
-        <Field label="Host" className="col-span-2">
-          <input
-            type="text"
-            value={props.host}
-            onChange={(e) => props.setHost(e.target.value)}
-            spellCheck={false}
-            placeholder="example.com or 1.2.3.4"
-            className={inputCls}
-          />
-        </Field>
-        <Field label="Port">
-          <input
-            type="number"
-            value={props.port}
-            min={1}
-            max={65535}
-            onChange={(e) => props.setPort(Number(e.target.value) || 22)}
-            className={inputCls}
-          />
-        </Field>
-      </div>
-      <Field label="User">
+      <Field label="SSH command">
         <input
           type="text"
-          value={props.user}
-          onChange={(e) => props.setUser(e.target.value)}
+          value={props.command}
+          onChange={(e) => props.setCommand(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && ready && !props.testing) props.onTest();
+          }}
           spellCheck={false}
-          placeholder="root, ubuntu, …"
-          className={inputCls}
-        />
-      </Field>
-      <Field label="Identity file (optional)">
-        <input
-          type="text"
-          value={props.identityPath}
-          onChange={(e) => props.setIdentityPath(e.target.value)}
-          spellCheck={false}
-          placeholder="~/.ssh/id_ed25519"
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoFocus
+          placeholder="ssh leonard"
           className={inputCls + ' font-mono'}
         />
       </Field>
-      <Field label="Password (optional)">
+      <p className="text-[10.5px] leading-snug text-muted-foreground/80">
+        Just type the ssh command you&apos;d use in a terminal — a{' '}
+        <span className="font-mono">~/.ssh/config</span> alias like{' '}
+        <span className="font-mono">ssh leonard</span>, or the full form{' '}
+        <span className="font-mono">ssh -p 2222 ubuntu@1.2.3.4 -i ~/.ssh/key</span>.
+        We read your <span className="font-mono">~/.ssh/config</span> and keys
+        automatically.
+      </p>
+      {props.resolvedLabel && (
+        <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5 font-mono text-[10.5px] text-muted-foreground">
+          → {props.resolvedLabel}
+        </div>
+      )}
+      <Field label="Password (optional — only if the host needs one)">
         <input
           type="password"
           value={props.password}
@@ -360,15 +368,6 @@ function ConfigStep(props: {
           className="h-3.5 w-3.5"
         />
         <span>Remember password (encrypted at rest)</span>
-      </label>
-      <label className="flex cursor-pointer items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={props.useAgent}
-          onChange={(e) => props.setUseAgent(e.target.checked)}
-          className="h-3.5 w-3.5"
-        />
-        <span>Try SSH agent (SSH_AUTH_SOCK) if no key works</span>
       </label>
       <p className="text-[10.5px] leading-snug text-muted-foreground/80">
         Password is held in memory for this session only. We persist the
@@ -405,7 +404,7 @@ function ConfigStep(props: {
         </div>
       )}
 
-      <div className="flex items-center justify-end gap-2 pt-1">
+      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
         <button
           type="button"
           onClick={props.onCancel}
@@ -474,7 +473,7 @@ function BrowseStep(props: {
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <button
           type="button"
           onClick={() => props.data?.parent && props.doBrowse(props.data.parent)}
@@ -501,7 +500,7 @@ function BrowseStep(props: {
             if (e.key === 'Enter' && props.path) props.doBrowse(props.path);
           }}
           spellCheck={false}
-          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
+          className="min-w-[9rem] flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
           placeholder="/absolute/path"
         />
         <button
@@ -521,7 +520,7 @@ function BrowseStep(props: {
       </div>
       {creating && (
         <div className="flex flex-col gap-1 border-b border-border bg-emerald-500/[0.04] px-3 py-2">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <FolderPlus className="h-4 w-4 shrink-0 text-emerald-400" />
             <input
               autoFocus
@@ -537,7 +536,7 @@ function BrowseStep(props: {
                 }
               }}
               spellCheck={false}
-              className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
+              className="min-w-[9rem] flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono text-xs outline-none focus:border-ring"
               placeholder="folder-name"
             />
             <button
@@ -605,7 +604,7 @@ function BrowseStep(props: {
           </ul>
         )}
       </div>
-      <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-3 py-2">
         <button
           type="button"
           onClick={props.onCancel}

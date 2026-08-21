@@ -122,7 +122,7 @@ export async function GET(req: NextRequest) {
 
   let abs = target;
   if (abs === '~' || abs.startsWith('~')) {
-    const home = (await host.exec('printf %s "$HOME"')).stdout.trim() || '/';
+    const home = await host.homeDir();
     abs = abs === '~' ? home : home + abs.slice(1);
   }
   if (!abs.startsWith('/')) abs = '/' + abs;

@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Download,
   Loader2,
@@ -330,7 +331,12 @@ export default function FilesView() {
   if (!cwd) {
     return (
       <div className="flex h-full items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground">
-        Select a folder in the left panel to browse files.
+        <span className="md:hidden">
+          Tap the menu at the top left to pick a folder and browse files.
+        </span>
+        <span className="hidden md:inline">
+          Select a folder in the left panel to browse files.
+        </span>
       </div>
     );
   }
@@ -339,7 +345,16 @@ export default function FilesView() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="scrollbar-thin flex w-72 shrink-0 flex-col overflow-y-auto border-r border-border/60 bg-card/30 text-sm">
+      {/* One pane at a time on a phone: a 288px tree beside a viewer leaves
+          the viewer about 100px wide, which is narrower than a single line of
+          code. Below `md` the tree *is* the screen until a file is picked,
+          and the viewer takes over once one is. */}
+      <aside
+        className={cn(
+          'scrollbar-thin w-full shrink-0 flex-col overflow-y-auto border-r border-border/60 bg-card/30 text-sm md:flex md:w-72',
+          selected ? 'hidden' : 'flex',
+        )}
+      >
         <div className="sticky top-0 z-10 flex items-center justify-between gap-1 border-b border-border/40 bg-card/80 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
           <span className="truncate">Files</span>
           <div className="flex items-center gap-1">
@@ -426,10 +441,25 @@ export default function FilesView() {
           />
         )}
       </aside>
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section
+        className={cn(
+          'min-w-0 flex-1 flex-col md:flex',
+          selected ? 'flex' : 'hidden',
+        )}
+      >
         <div className="flex shrink-0 items-center gap-2 border-b border-border/40 bg-card/30 px-3 py-1.5 text-[11px] text-muted-foreground">
           {selected ? (
             <>
+              {/* The tree is off-screen on a phone while a file is open, so
+                  this is the only way back to it. */}
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="-ml-1 shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground md:hidden"
+                aria-label="Back to file tree"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
               {(() => {
                 const meta = getFileMeta(basename(selected));
                 return (
@@ -593,7 +623,9 @@ function DirNode({
           className={cn(
             'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-emerald-300/70 hover:bg-emerald-500/20 hover:text-emerald-100',
             // Hidden until row hover/focus so the tree stays clean.
-            'opacity-0 transition-opacity group-hover/dir:opacity-100 focus-visible:opacity-100',
+            // `touch:` keeps it permanently visible where hover does not
+            // exist — otherwise downloading a folder is impossible on a phone.
+            'opacity-0 transition-opacity group-hover/dir:opacity-100 focus-visible:opacity-100 touch:opacity-100',
           )}
           title={`Download ${path} as ${basename(path)}.tar.gz`}
           aria-label={`Download folder ${path} as a tar.gz archive`}
@@ -611,7 +643,7 @@ function DirNode({
             'mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-blue-300/70 hover:bg-blue-500/20 hover:text-blue-100',
             // Always visible at low opacity so the user can see where they
             // can upload. Brightens on row hover, full on drag/upload.
-            'opacity-60 transition-opacity group-hover/dir:opacity-100 focus-visible:opacity-100',
+            'opacity-60 transition-opacity group-hover/dir:opacity-100 focus-visible:opacity-100 touch:opacity-100',
             (isUploading || isDragOver) && 'opacity-100',
           )}
           title={`Upload files to ${path}`}
@@ -722,7 +754,7 @@ function FileNode({
         className={cn(
           'mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-emerald-300/70 hover:bg-emerald-500/20 hover:text-emerald-100',
           // Hidden until the row is hovered/focused so the tree stays clean.
-          'opacity-0 transition-opacity group-hover/file:opacity-100 focus-visible:opacity-100',
+          'opacity-0 transition-opacity group-hover/file:opacity-100 focus-visible:opacity-100 touch:opacity-100',
           selected && 'opacity-100',
         )}
         title={`Download ${entry.path}`}

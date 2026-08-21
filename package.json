@@ -5,13 +5,20 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "start": "bash scripts/start.sh",
+    "lint": "eslint",
+    "desktop": "electron electron/main.cjs --no-sandbox",
+    "expose": "bash scripts/expose.sh public",
+    "expose:off": "bash scripts/expose.sh off",
+    "expose:status": "bash scripts/expose.sh status",
+    "start:plain": "next start",
+    "expose:tailnet": "bash scripts/expose.sh tailnet"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.197",
     "@anthropic-ai/sdk": "^0.104.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opencode-ai/sdk": "^1.18.11",
     "@types/better-sqlite3": "^7.6.13",
     "@types/ssh2": "^1.15.5",
     "@xterm/addon-fit": "^0.11.0",
@@ -19,8 +26,10 @@
     "better-sqlite3": "^12.9.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.14.0",
+    "mermaid": "^11.16.0",
     "next": "16.2.4",
     "node-pty": "^1.1.0",
+    "opencode-ai": "^1.18.11",
     "prism-react-renderer": "^2.4.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -29,6 +38,7 @@
     "remark-gfm": "^4.0.1",
     "ssh2": "^1.17.0",
     "tailwind-merge": "^3.5.0",
+    "undici": "^7.28.0",
     "zod": "^4.4.2"
   },
   "devDependencies": {
@@ -36,6 +46,7 @@
     "@types/node": "20.19.39",
     "@types/react": "19.2.14",
     "@types/react-dom": "^19",
+    "electron": "^43.1.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",

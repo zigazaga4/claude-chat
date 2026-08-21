@@ -58,6 +58,15 @@ Then open the app and **set your system prompt** (scroll icon, top bar) — the 
 
 DB path can be overridden with `CLAUDE_CHAT_DB_PATH`.
 
+### Install as an app (PWA)
+
+claude chat is a **Progressive Web App** — install it for a standalone window with its own icon, no extra runtime and no second browser engine (unlike Electron/Tauri, it reuses the browser you already have).
+
+- **Chrome / Edge** — open the app and click the **install icon** in the address bar (or ⋮ → *Install claude chat*).
+- **iOS Safari** — **Share → Add to Home Screen**.
+
+Installing requires a secure context, so open the app at **`http://localhost:3002`** (localhost counts as secure even over plain HTTP). To install from another device — e.g. over Tailscale — serve it over **HTTPS** first; `tailscale serve` gives you a free certificate.
+
 ---
 
 ## The local system
@@ -77,6 +86,8 @@ claude chat can work on **remote machines** as first-class workspaces:
 3. **Pick a remote folder** with the remote folder browser and it becomes a workspace with a `ssh://user@host:port/path` identity.
 
 When you chat in an SSH workspace, Claude's filesystem and shell tools are **transparently swapped for remote equivalents**: an in-process MCP server exposes `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `LS` that execute over the SSH connection (commands via exec, files via SFTP), while the matching built-in local tools are blocked. The remote tools are 1:1 mirrors of the built-ins — same parameters, same output format, and remote images come back as real image blocks so Claude can *see* screenshots on the server.
+
+**Cross-platform remotes.** The remote tools are **OS-aware**. The connection detects the remote's operating system once (via a `uname` probe) and adapts: against a POSIX host — Linux, macOS, or a Windows box whose SSH shell is WSL/Git-Bash — they use bash + GNU coreutils and `/`-rooted paths; against a **native Windows** host (OpenSSH with `cmd.exe`/PowerShell) they automatically switch to PowerShell equivalents (`Get-ChildItem`, `Select-String`, `New-Item`…) and Windows path handling (`C:\…` / `/C:/…`). Windows commands are run through `powershell -EncodedCommand`, so they're robust regardless of the remote's default shell. The system prompt tells Claude which platform it's on, so it writes native commands from the first call. The file tools (`Read`/`Write`/`Edit`), file browser, uploads/downloads, and the built-in terminal work against Windows hosts too.
 
 Conversations created in an SSH workspace are tagged `ssh` in the database and badged in the UI, and are kept out of your local workspace listings.
 
@@ -111,6 +122,7 @@ Choose the model per conversation:
 | Claude Fable 5 | adaptive (always on) |
 | Claude Opus 4.8 *(default)* | adaptive (always on) |
 | Claude Opus 4.7 | adaptive (always on) |
+| Claude Sonnet 5 | adaptive (always on) |
 | Claude Sonnet 4.6 | adaptive (always on) |
 | Claude Haiku 4.5 | extended (always on) |
 

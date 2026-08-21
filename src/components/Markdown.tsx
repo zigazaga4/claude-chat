@@ -1,8 +1,9 @@
 'use client';
 
-import type { ComponentProps, ReactNode } from 'react';
+import { Children, isValidElement, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import MermaidDiagram from './MermaidDiagram';
 import { cn } from '@/lib/cn';
 
 type MarkdownProps = {
@@ -11,6 +12,32 @@ type MarkdownProps = {
 };
 
 type CodeProps = ComponentProps<'code'> & { inline?: boolean };
+
+/** Flatten a rendered subtree back to its text. Fenced code arrives as a lone
+ *  string, but highlighters and plugins can split it across nodes. */
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  if (isValidElement(node)) return nodeText((node.props as { children?: ReactNode }).children);
+  return '';
+}
+
+/**
+ * A ```mermaid fence, if that is what this <pre> wraps.
+ *
+ * The swap happens at `pre` rather than at `code` because the diagram replaces
+ * the whole code-block shell — returning a <div> from `code` would leave it
+ * nested inside a styled <pre>, which is both invalid nesting and a border
+ * drawn around a diagram that already has one.
+ */
+function mermaidSource(children: ReactNode): string | null {
+  const [child] = Children.toArray(children);
+  if (!isValidElement(child)) return null;
+  const { className } = child.props as { className?: string };
+  if (!/(?:^|\s)language-mermaid(?:$|\s)/.test(className ?? '')) return null;
+  return nodeText((child.props as { children?: ReactNode }).children);
+}
 
 const components = {
   p: ({ children }: { children?: ReactNode }) => (
@@ -61,11 +88,15 @@ const components = {
   td: ({ children }: { children?: ReactNode }) => (
     <td className="border border-border/60 px-2 py-1 align-top">{children}</td>
   ),
-  pre: ({ children }: { children?: ReactNode }) => (
-    <pre className="my-2 overflow-x-auto rounded-md border border-border/60 bg-background/80 p-3 text-xs leading-relaxed">
-      {children}
-    </pre>
-  ),
+  pre: ({ children }: { children?: ReactNode }) => {
+    const diagram = mermaidSource(children);
+    if (diagram !== null) return <MermaidDiagram code={diagram} />;
+    return (
+      <pre className="my-2 overflow-x-auto rounded-md border border-border/60 bg-background/80 p-3 text-xs leading-relaxed">
+        {children}
+      </pre>
+    );
+  },
   code: ({ inline, className, children, ...rest }: CodeProps) => {
     const text = String(children ?? '');
     const isBlock = !inline && /\n/.test(text);

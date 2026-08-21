@@ -75,13 +75,17 @@ function SystemPromptEditor({ onClose }: { onClose: () => void }) {
   // become containing blocks for `fixed` descendants and would trap the
   // overlay inside their box.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
+      {/* `dvh`, not `vh`: on a phone `vh` measures the viewport with the
+          browser chrome hidden, so 92vh is taller than what is actually on
+          screen and the footer's Save button lands below the fold. `dvh`
+          tracks the live viewport, including when the keyboard opens. */}
+      <div className="relative flex h-[92dvh] max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
         <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <ScrollText className="h-4 w-4 text-primary" />
@@ -117,7 +121,7 @@ function SystemPromptEditor({ onClose }: { onClose: () => void }) {
               }}
               spellCheck={false}
               placeholder="You are..."
-              className="scrollbar-thin h-72 min-h-0 w-full flex-1 resize-none rounded-lg border border-border/60 bg-background/60 p-3 font-mono text-[12px] leading-relaxed outline-none focus:border-primary/50"
+              className="scrollbar-thin h-full min-h-0 w-full flex-1 resize-none rounded-lg border border-border/60 bg-background/60 p-3 font-mono text-[13px] leading-relaxed outline-none focus:border-primary/50"
             />
           )}
           {filePath && (

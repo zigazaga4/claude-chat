@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Ghost, Loader2, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type {
   AssistantMessage,
@@ -11,9 +11,10 @@ import type {
   SystemMessage,
   UserMessage,
 } from '@/lib/types';
+import { MODELS, getDefaultEffort } from '@/lib/models';
+import { modelsForBackend, supportsBackend } from '@/lib/backends';
 import { useInstances } from '@/state/instances';
 import { useEffortSuggestion } from '@/hooks/useEffortSuggestion';
-import { useModelPreference } from '@/hooks/useModelPreference';
 import { useStreamingChat } from '@/hooks/useStreamingChat';
 import CompactBoundaryDivider from './CompactBoundaryDivider';
 import Composer from './Composer';
@@ -26,18 +27,88 @@ import { ToolUseBlockView } from './tools';
 import { LatestToolProvider } from './tools/LatestToolContext';
 
 export default function ChatView() {
-  const { active, contextWindow, patch, prependMessages } = useInstances();
-  const { model, effort, autoEffort, setModel, setEffort, setAutoEffort } =
-    useModelPreference();
+  const {
+    active,
+    contextWindow,
+    patch,
+    prependMessages,
+    openConversation,
+    discardThrowaway,
+    keepThrowaway,
+  } = useInstances();
+  // Model + thinking settings are per-instance now: each tab remembers its own
+  // picks. The pickers below read/write the active instance via `patch`.
+  const { model, effort, autoEffort } = active;
   const { suggest } = useEffortSuggestion();
-  const { send, queue, unqueue, abort, compact, submitAnswer } = useStreamingChat({
-    model,
-    effort,
-  });
+  const { send, queue, unqueue, abort, compact, submitAnswer } = useStreamingChat();
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasNearBottom = useRef(true);
   const isPrepending = useRef(false);
   const prevScrollHeight = useRef(0);
+  // Guards the one-shot message re-fetch for a restored conversation instance,
+  // keyed by `${instanceId}:${sessionId}` so each restored tab loads once.
+  const rehydratedRef = useRef<Set<string>>(new Set());
+
+  // When an instance is restored from localStorage it comes back pointing at a
+  // conversation (view + sessionId) but with no messages — those aren't
+  // persisted. The first time such an instance becomes active, re-fetch its
+  // history from the server DB. If the conversation is gone, fall back to the
+  // picker so the tab stays usable.
+  useEffect(() => {
+    if (
+      active.view !== 'conversation' ||
+      !active.sessionId ||
+      !active.cwd ||
+      active.messages.length > 0 ||
+      active.streaming ||
+      active.loadingOlder
+    ) {
+      return;
+    }
+    const sessionId = active.sessionId;
+    const cwd = active.cwd;
+    const instanceId = active.id;
+    const key = `${instanceId}:${sessionId}`;
+    if (rehydratedRef.current.has(key)) return;
+    rehydratedRef.current.add(key);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const url =
+          `/api/conversations/${encodeURIComponent(sessionId)}/messages` +
+          `?cwd=${encodeURIComponent(cwd)}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as {
+          messages: ChatMessage[];
+          oldestSeq: number | null;
+          hasMoreOlder: boolean;
+        };
+        if (cancelled) return;
+        openConversation(instanceId, sessionId, {
+          messages: data.messages,
+          oldestSeq: data.oldestSeq,
+          hasMoreOlder: data.hasMoreOlder,
+        });
+      } catch {
+        if (cancelled) return;
+        patch(instanceId, { view: 'picker', sessionId: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active.id,
+    active.view,
+    active.sessionId,
+    active.cwd,
+    active.messages.length,
+    active.streaming,
+    active.loadingOlder,
+    openConversation,
+    patch,
+  ]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -140,7 +211,14 @@ export default function ChatView() {
   if (!active.cwd) {
     return (
       <div className="flex h-full items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground">
-        Select a folder in the left panel to start a chat.
+        {/* The left panel does not exist below `md` — it lives behind the
+            menu button — so the instruction has to change with the layout. */}
+        <span className="md:hidden">
+          Tap the menu at the top left to pick a folder and start a chat.
+        </span>
+        <span className="hidden md:inline">
+          Select a folder in the left panel to start a chat.
+        </span>
       </div>
     );
   }
@@ -155,6 +233,41 @@ export default function ChatView() {
 
   return (
     <div className="flex h-full flex-col">
+      {active.ephemeral && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-amber-400/25 bg-amber-500/[0.07] px-4 py-1.5 text-[11px] sm:px-8">
+          <Ghost className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+          <span className="shrink-0 font-semibold tracking-tight text-amber-200">
+            Throwaway chat
+          </span>
+          <span className="hidden truncate text-muted-foreground sm:inline">
+            — kept out of your conversation list, and kept until you discard it
+          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => keepThrowaway(active.id)}
+              title="Save this chat and show it in the conversation list"
+              className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-200 transition-colors hover:bg-emerald-500/20"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // "Forget it" mid-reply is a real intent — stop the turn first
+                // so nothing keeps writing into a conversation we're deleting.
+                if (active.streaming) abort();
+                discardThrowaway(active.id);
+              }}
+              title="Delete this chat now and go back"
+              className="inline-flex items-center gap-1 rounded-md border border-red-400/40 bg-red-500/10 px-2 py-0.5 font-medium text-red-200 transition-colors hover:bg-red-500/20"
+            >
+              <Trash2 className="h-3 w-3" />
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
       <div
         ref={scrollRef}
         className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8"
@@ -199,23 +312,48 @@ export default function ChatView() {
           )}
         </div>
       </div>
-      <div className="border-t border-border/70 bg-card/20 px-3 py-3 backdrop-blur-sm sm:px-6">
+      {/* pb-safe keeps the send button clear of the iPhone home indicator,
+          which otherwise sits directly on top of it. */}
+      <div className="border-t border-border/70 bg-card/20 px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm sm:px-6">
         <div className="mx-auto max-w-3xl">
           <Composer
+            key={active.id}
+            draft={active.draft}
+            onDraftChange={(t) => patch(active.id, { draft: t })}
             mode={active.mode}
             onModeChange={(m) => patch(active.id, { mode: m })}
             model={model}
-            onModelChange={setModel}
+            onModelChange={(m) => patch(active.id, { model: m })}
+            backend={active.backend}
+            // Locked the moment a conversation exists: the engine owns that
+            // conversation's session store and cannot be swapped under it.
+            backendLocked={active.sessionId != null}
+            onBackendChange={(b) =>
+              patch(active.id, {
+                backend: b,
+                // Switching to an engine that cannot serve the current model
+                // would leave an unusable pair, so move to one it can.
+                ...(supportsBackend(model, b)
+                  ? {}
+                  : (() => {
+                      const next = modelsForBackend(MODELS, b)[0];
+                      return next
+                        ? { model: next.id, effort: getDefaultEffort(next.id) }
+                        : {};
+                    })()),
+              })
+            }
             effort={effort}
-            onEffortChange={setEffort}
+            onEffortChange={(e) => patch(active.id, { effort: e })}
             autoEffort={autoEffort}
-            onAutoEffortChange={setAutoEffort}
+            onAutoEffortChange={(v) => patch(active.id, { autoEffort: v })}
             requestSuggestion={suggest}
             onSend={(text, images, eff) => send(text, images, eff)}
             onAbort={abort}
             onCompact={() => void compact()}
             canCompact={!!active.sessionId}
             tokensUsed={active.tokensUsed}
+            cacheWarm={active.cacheWarm}
             contextWindow={contextWindow}
             disabled={!active.cwd}
             streaming={active.streaming}
@@ -224,6 +362,7 @@ export default function ChatView() {
               void submitAnswer(toolUseId, answers)
             }
             queuedMessages={visibleQueue}
+            runningTasks={active.runningTasks}
             onQueue={(text, images) => {
               queue(text, images);
             }}

@@ -16,7 +16,7 @@ import type {
   ToolUseBlock,
   UserMessage,
 } from '@/lib/types';
-import type { EffortLevel, ModelId } from '@/lib/models';
+import type { EffortLevel } from '@/lib/models';
 import { useInstances } from '@/state/instances';
 import { setPlanUsage, setRateLimitUsage } from '@/state/usage';
 
@@ -47,7 +47,44 @@ type StreamEvent =
       toolUseId: string;
       answers: Record<string, string>;
     }
-  | { type: 'token_budget'; used: number; total: number }
+  | {
+      type: 'token_budget';
+      used: number;
+      total: number;
+      /** Billing split, when the provider reports one. See streamEvents.ts. */
+      split?: { input: number; cached: number; output: number };
+    }
+  | {
+      /**
+       * The SDK registered a task. NOT the same as "went to the background" —
+       * any shell running longer than ~2s gets one. Branch on `isBackgrounded`.
+       */
+      type: 'task_started';
+      taskId: string;
+      description: string;
+      subagentType?: string | null;
+      taskType?: string | null;
+      toolUseId?: string | null;
+      isBackgrounded?: boolean;
+    }
+  | {
+      type: 'task_updated';
+      taskId: string;
+      isBackgrounded?: boolean;
+      status?: string | null;
+    }
+  | {
+      type: 'task_progress';
+      taskId: string;
+      description: string;
+      lastToolName?: string | null;
+    }
+  | {
+      type: 'task_finished';
+      taskId: string;
+      status: string;
+      summary: string;
+    }
   | {
       type: 'compact_boundary';
       messageId: string;
@@ -134,6 +171,12 @@ type SendOptions = {
   /** When true, don't append a user message — used for /compact slash command. */
   compact?: boolean;
   /**
+   * Explicit target instance. Omitted for normal user sends (which target the
+   * active instance), but set by the fallback drain so a queued message always
+   * reopens a stream on ITS OWN instance even if the user switched tabs.
+   */
+  instanceId?: string;
+  /**
    * Optional caller-allocated IDs. When the streaming hook is replaying a
    * fallback (inject endpoint returned 410), the caller forwards the IDs the
    * inject was already going to use so the user message keeps its identity
@@ -144,20 +187,13 @@ type SendOptions = {
   /**
    * One-shot effort override for THIS stream only. Used when the user accepts
    * an auto-effort suggestion: the chosen effort must reach the request body
-   * synchronously, before the `modelOptsRef` useEffect has a chance to sync
-   * the lifted preference. Falls back to the live preference when absent.
+   * synchronously, rather than waiting for the instance's effort prop to
+   * propagate. Falls back to the owning instance's effort when absent.
    */
   effort?: EffortLevel;
 };
 
-type ModelOptions = {
-  /** Current model selection — passed to /api/chat on every new stream. */
-  model?: ModelId;
-  /** Current effort ("thinking power") — passed straight to the SDK's `effort`. */
-  effort?: EffortLevel;
-};
-
-export function useStreamingChat(modelOpts: ModelOptions = {}) {
+export function useStreamingChat() {
   const {
     stateRef,
     patch,
@@ -165,36 +201,34 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
     updateMessage,
     enqueueMessage,
     removeQueuedMessage,
+    taskStarted,
+    taskProgress,
+    taskUpdated,
+    taskFinished,
+    clearTasks,
+    settleMessages,
   } = useInstances();
-  const aborterRef = useRef<AbortController | null>(null);
+  // Per-instance AbortControllers — keyed by instanceId so aborting one
+  // instance's stream never touches another's. (A single shared controller was
+  // why multiple instances trampled each other.)
+  const abortersRef = useRef<Map<string, AbortController>>(new Map());
   /**
-   * Live snapshot of the current model+thinking preference. Stored in a ref so
-   * the long-lived `runStream` closure (and the fallback-drain recursion at
-   * the end of it) always read the LATEST selection — not the one captured
-   * when the hook last re-rendered. The user can change picks while a stream
-   * is alive; the new stream that drains a queued message picks them up.
+   * Synchronous per-instance gate so two `runStream` calls can't open parallel
+   * SDK queries against the SAME instance/session — both would `resume:` the
+   * same JSONL transcript and clobber each other. React's `streaming` prop only
+   * flips on the next commit, so without this a rapid double-Enter slips through
+   * the Composer's streaming check. Keyed by instanceId so a *different*
+   * instance can stream concurrently — that's what makes multi-instance work.
    */
-  const modelOptsRef = useRef<ModelOptions>(modelOpts);
-  useEffect(() => {
-    modelOptsRef.current = modelOpts;
-  }, [modelOpts]);
+  const inFlightRef = useRef<Set<string>>(new Set());
   /**
-   * Synchronous gate so two `runStream` calls can't open parallel SDK queries
-   * against the same session — both would `resume:` the same JSONL transcript
-   * and clobber each other. React's `streaming` prop only flips on the next
-   * commit, so without this ref a rapid double-Enter slips through the
-   * Composer's streaming check.
+   * The currently-live SDK stream per instance. Mid-loop injects look up the
+   * `streamId` here to address the right server-side query. Entry is removed
+   * when that instance's stream finishes or aborts.
    */
-  const streamInFlightRef = useRef(false);
-  /**
-   * Tracks the currently-live SDK stream for the active instance. Mid-loop
-   * injects use `streamId` here to address the right server-side query.
-   * Cleared when the stream finishes or aborts.
-   */
-  const liveStreamRef = useRef<{
-    instanceId: string;
-    streamId: string | null;
-  } | null>(null);
+  const liveStreamsRef = useRef<Map<string, { streamId: string | null }>>(
+    new Map(),
+  );
   /**
    * userMessageIds of queued messages that have already been successfully
    * POSTed to /api/chat/inject. We track them in a ref (not in React state)
@@ -214,7 +248,9 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
    * arrives after the user's message into a fresh assistant message BELOW
    * it. Cleared when the stream ends.
    */
-  const turnSplitRef = useRef<((instanceId: string) => void) | null>(null);
+  const turnSplitRef = useRef<Map<string, (instanceId: string) => void>>(
+    new Map(),
+  );
 
   /**
    * Append a user message to the active conversation, but only if a message
@@ -269,16 +305,15 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
    */
   const injectMessage = useCallback(
     async (
+      instanceId: string,
       queued: QueuedMessage,
       images: SendImage[] | undefined,
     ): Promise<boolean> => {
       if (injectedRef.current.has(queued.userMessageId)) return true;
-      const inst = stateRef.current.instances.find(
-        (i) => i.id === stateRef.current.activeId,
-      );
-      if (!inst) return false;
-      const live = liveStreamRef.current;
-      if (!live || live.instanceId !== inst.id || !live.streamId) return false;
+      // Address the live stream of the SPECIFIC instance this message belongs
+      // to — never the (possibly different) active instance.
+      const live = liveStreamsRef.current.get(instanceId);
+      if (!live || !live.streamId) return false;
       // Mark before awaiting so a concurrent caller (e.g. the stream_ready
       // drain firing while this POST is still in flight) bails out instead
       // of double-injecting the same message.
@@ -303,7 +338,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
         return false;
       }
     },
-    [stateRef],
+    [],
   );
 
   /**
@@ -316,9 +351,10 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
       const trimmed = prompt.trim();
       if (!trimmed && !compact) return;
 
-      const inst = stateRef.current.instances.find(
-        (i) => i.id === stateRef.current.activeId,
-      );
+      // Normal sends target the active instance; the fallback drain passes an
+      // explicit instanceId so it reopens a stream on the right instance.
+      const targetId = opts.instanceId ?? stateRef.current.activeId;
+      const inst = stateRef.current.instances.find((i) => i.id === targetId);
       if (!inst || !inst.cwd) return;
       if (compact && !inst.sessionId) return; // /compact only valid mid-conversation
 
@@ -326,7 +362,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
       // the same session and corrupt the transcript. Redirect into the
       // mid-loop queue/inject path instead so the message still gets sent
       // — just through the running stream rather than a parallel one.
-      if (streamInFlightRef.current) {
+      if (inFlightRef.current.has(inst.id)) {
         if (!compact) {
           const qUserId = opts.userMessageId ?? newId('user');
           const qAsstId = opts.assistantMessageId ?? newId('asst');
@@ -351,13 +387,13 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
           appendUserMessageIfAbsent(inst.id, qUserId, trimmed, images);
           // Keep the canvas chronological: close the streaming assistant
           // message so post-send blocks land BELOW this user bubble.
-          turnSplitRef.current?.(inst.id);
+          turnSplitRef.current.get(inst.id)?.(inst.id);
           enqueueMessage(inst.id, queueMsg);
-          void injectMessage(queueMsg, images);
+          void injectMessage(inst.id, queueMsg, images);
         }
         return;
       }
-      streamInFlightRef.current = true;
+      inFlightRef.current.add(inst.id);
 
       const instId = inst.id;
       const userMessageId = opts.userMessageId ?? newId('user');
@@ -535,17 +571,21 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
         activeAssistantId = newId('asst');
         assistantStartedForActiveTurn = false;
       };
-      turnSplitRef.current = splitTurnForInjectedUser;
+      turnSplitRef.current.set(instId, splitTurnForInjectedUser);
 
       const ac = new AbortController();
-      aborterRef.current = ac;
-      liveStreamRef.current = { instanceId: instId, streamId: null };
+      abortersRef.current.set(instId, ac);
+      liveStreamsRef.current.set(instId, { streamId: null });
 
       try {
-        const { model, effort: liveEffort } = modelOptsRef.current;
+        // Model + effort are read off the OWNING instance, not a global pref,
+        // so each tab talks to the model it was set to — including a queued
+        // message drained on instance B while A is active (the drain looks up
+        // B's `inst`, so this reads B's settings, not A's).
+        const { model, effort: instEffort } = inst;
         // A per-stream override (accepted auto-effort suggestion) wins over the
-        // live preference so the request uses exactly what the user agreed to.
-        const effort = opts.effort ?? liveEffort;
+        // instance's effort so the request uses exactly what the user agreed to.
+        const effort = opts.effort ?? instEffort;
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -560,6 +600,13 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
             compact,
             model,
             effort,
+            // Only read on the turn that creates the conversation; harmless
+            // (and ignored) on every later turn of the same session.
+            ephemeral: inst.ephemeral,
+            // Same: honoured only when the conversation is created. Once it
+            // exists the server uses the engine stored against it and ignores
+            // whatever is sent here.
+            backend: inst.backend,
           }),
           signal: ac.signal,
         });
@@ -609,8 +656,9 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
                 break;
               }
               case 'stream_ready': {
-                if (liveStreamRef.current?.instanceId === instId) {
-                  liveStreamRef.current.streamId = event.streamId;
+                const liveEntry = liveStreamsRef.current.get(instId);
+                if (liveEntry) {
+                  liveEntry.streamId = event.streamId;
                 }
                 // Catch-up: any messages the user enqueued in the narrow
                 // window between `runStream` opening and this event landing
@@ -628,7 +676,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
                         mediaType: img.mediaType,
                         name: img.name,
                       }));
-                      void injectMessage(q, sendImages);
+                      void injectMessage(instId, q, sendImages);
                     }
                   }
                 }
@@ -945,7 +993,44 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
                 break;
               }
               case 'token_budget': {
-                patch(instId, { tokensUsed: event.used });
+                patch(instId, {
+                  tokensUsed: event.used,
+                  // Latch warm on the first call that reports cache reads. It
+                  // never flips back within a session: the provider keeps the
+                  // prefix cached, and flickering the estimate between the
+                  // 10x-apart warm and cold prices on a step that happened to
+                  // report no cache would be worse than slightly optimistic.
+                  ...(event.split && event.split.cached > 0
+                    ? { cacheWarm: true }
+                    : {}),
+                });
+                break;
+              }
+              case 'task_started': {
+                taskStarted(instId, {
+                  taskId: event.taskId,
+                  description: event.description,
+                  subagentType: event.subagentType ?? null,
+                  lastToolName: null,
+                  startedAt: Date.now(),
+                  taskType: event.taskType ?? null,
+                  isBackgrounded: event.isBackgrounded ?? false,
+                });
+                break;
+              }
+              case 'task_updated': {
+                // A foreground command promoted to the background (Ctrl+B or
+                // the SDK's own auto-background) — the point at which it starts
+                // belonging in the running-tasks strip.
+                taskUpdated(instId, event.taskId, event.isBackgrounded ?? false);
+                break;
+              }
+              case 'task_progress': {
+                taskProgress(instId, event.taskId, event.lastToolName ?? null);
+                break;
+              }
+              case 'task_finished': {
+                taskFinished(instId, event.taskId);
                 break;
               }
               case 'compact_boundary': {
@@ -1022,12 +1107,30 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
           streamingMessageId: null,
           compacting: false,
         });
-        aborterRef.current = null;
-        if (liveStreamRef.current?.instanceId === instId) {
-          liveStreamRef.current = null;
+        // Tear down only THIS instance's entries — leave any other instance's
+        // live stream untouched. Guard the aborter delete so a brand-new stream
+        // that already replaced our controller isn't dropped.
+        if (abortersRef.current.get(instId) === ac) {
+          abortersRef.current.delete(instId);
+          // Background agents are tracked only for as long as this stream can
+          // report on them — `task_finished` arrives on it and nowhere else.
+          // Anything still open once it closes (grace expired, aborted, errored)
+          // is unreachable, and leaving it in state pins a "N agents running"
+          // strip above the composer that nothing can ever clear. Guarded by
+          // the same aborter check so a newer stream's tasks survive.
+          clearTasks(instId);
+          // `finalizeActiveTurn` above closes the turn this stream was on.
+          // This catches everything else it cannot see: a `text_stop` or
+          // `message_complete` that never arrived, a turn finalized before a
+          // late block landed, or a message this closure wrote after the user
+          // moved to another conversation. Those flags are only ever cleared
+          // by stream events, so once the stream is gone they are stranded on
+          // screen as a caret blinking for tokens that will never come.
+          settleMessages(instId);
         }
-        turnSplitRef.current = null;
-        streamInFlightRef.current = false;
+        liveStreamsRef.current.delete(instId);
+        turnSplitRef.current.delete(instId);
+        inFlightRef.current.delete(instId);
 
         // Fallback drain: any queued messages that never got injected (e.g.
         // because the stream closed before we managed to POST them) get sent
@@ -1048,6 +1151,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
                 })),
                 userMessageId: next.userMessageId,
                 assistantMessageId: next.assistantMessageId,
+                instanceId: instId,
               });
             });
           }
@@ -1063,6 +1167,12 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
       removeQueuedMessage,
       enqueueMessage,
       injectMessage,
+      taskStarted,
+      taskProgress,
+      taskUpdated,
+      taskFinished,
+      clearTasks,
+      settleMessages,
     ],
   );
 
@@ -1125,7 +1235,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
       // Keep the canvas chronological: close the streaming assistant message
       // so blocks generated after this send render BELOW the user bubble
       // instead of growing the message above it.
-      turnSplitRef.current?.(inst.id);
+      turnSplitRef.current.get(inst.id)?.(inst.id);
       enqueueMessage(inst.id, msg);
       // Fire-and-forget — the inject result drives nothing visible directly;
       // a successful inject results in a server `turn_started` event which
@@ -1133,7 +1243,7 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
       // inject (no live stream) leaves it queued, and either the user's
       // next send opens a new stream that picks it up, or the current
       // stream's finally-block drain does.
-      void injectMessage(msg, images);
+      void injectMessage(inst.id, msg, images);
       return msg;
     },
     [stateRef, appendUserMessageIfAbsent, enqueueMessage, injectMessage],
@@ -1156,8 +1266,10 @@ export function useStreamingChat(modelOpts: ModelOptions = {}) {
   );
 
   const abort = useCallback(() => {
-    aborterRef.current?.abort();
-  }, []);
+    // Abort only the active instance's stream — others keep running.
+    const id = stateRef.current.activeId;
+    abortersRef.current.get(id)?.abort();
+  }, [stateRef]);
 
   const submitAnswer = useCallback(
     async (toolUseId: string, answers: Record<string, string>) => {

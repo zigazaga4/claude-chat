@@ -48,7 +48,11 @@ export default function ShellView() {
       const term = new Terminal({
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-        fontSize: 13,
+        // A phone is ~390 CSS px wide, where 13px monospace leaves roughly 48
+        // columns and most command output wraps. 11px buys about a dozen more.
+        // Read once at construction — the container's ResizeObserver below
+        // handles every later size change, including the keyboard opening.
+        fontSize: window.innerWidth < 640 ? 11 : 13,
         cursorBlink: true,
         convertEol: false,
         scrollback: 5000,
@@ -238,7 +242,10 @@ export default function ShellView() {
   if (!cwd) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
-        Select a workspace to open a shell.
+        <span className="md:hidden">
+          Tap the menu at the top left to pick a workspace and open a shell.
+        </span>
+        <span className="hidden md:inline">Select a workspace to open a shell.</span>
       </div>
     );
   }
@@ -252,7 +259,10 @@ export default function ShellView() {
         </div>
         <StatusBadge status={status} error={errorMsg} />
       </div>
-      <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden" />
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1 overflow-hidden pb-[env(safe-area-inset-bottom)]"
+      />
     </div>
   );
 }

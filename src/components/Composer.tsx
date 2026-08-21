@@ -1,29 +1,42 @@
 'use client';
 
-import { type ChangeEvent, type KeyboardEvent, useRef, useState } from 'react';
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   ArrowUp,
+  Bot,
   Clock,
   Image as ImageIcon,
   Loader2,
   Minimize2,
   Square,
+  Terminal,
   Wand2,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import CreditEstimate from './CreditEstimate';
 import type {
   ImageMediaType,
   PendingQuestion,
   PermissionMode,
   QueuedMessage,
+  RunningTask,
 } from '@/lib/types';
 import type { EffortLevel, EffortSuggestion, ModelId } from '@/lib/models';
+import type { ChatBackend } from '@/lib/backends';
 import type { SendImage } from '@/hooks/useStreamingChat';
 import AskQuestionPicker from './AskQuestionPicker';
 import AutoEffortToggle from './AutoEffortToggle';
 import EffortPicker from './EffortPicker';
 import EffortSuggestionPanel from './EffortSuggestionPanel';
+import BackendPicker from './BackendPicker';
+import CollapsiblePanel from './CollapsiblePanel';
 import ModelPicker from './ModelPicker';
 import ModePicker from './ModePicker';
 import TokenCircle from './TokenCircle';
@@ -56,10 +69,22 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 type ComposerProps = {
+  /**
+   * The instance's unsent draft text. Controlled by the owning instance so the
+   * input isn't shared between tabs and survives restarts. Pair with a stable
+   * `key={instanceId}` on the <Composer> so the local attachment/suggestion
+   * state resets per instance too.
+   */
+  draft: string;
+  onDraftChange: (text: string) => void;
   mode: PermissionMode;
   onModeChange: (mode: PermissionMode) => void;
   model: ModelId;
   onModelChange: (model: ModelId) => void;
+  /** Engine for this conversation, and whether it is still changeable. */
+  backend: ChatBackend;
+  onBackendChange: (backend: ChatBackend) => void;
+  backendLocked: boolean;
   effort: EffortLevel;
   onEffortChange: (effort: EffortLevel) => void;
   /** "Auto effort" feature toggle — suggest an effort for each first message. */
@@ -76,12 +101,22 @@ type ComposerProps = {
   canCompact?: boolean;
   tokensUsed: number;
   contextWindow: number;
+  /**
+   * Whether the last API call hit the prompt cache. Only used by the credit
+   * estimate, where warm-vs-cold is a 10x swing in what the next send costs.
+   */
+  cacheWarm?: boolean;
   disabled?: boolean;
   streaming?: boolean;
   pendingQuestion?: PendingQuestion | null;
   onSubmitAnswer?: (toolUseId: string, answers: Record<string, string>) => void;
   /** FIFO of messages typed while the agent was busy. */
   queuedMessages?: QueuedMessage[];
+  /**
+   * Background subagents still running. They outlive the turn that spawned
+   * them, so this stays visible after the model has gone quiet.
+   */
+  runningTasks?: RunningTask[];
   /**
    * Queue a message for later instead of sending immediately. Wired up when
    * the agent is streaming so Enter/click defers instead of being lost.
@@ -92,10 +127,15 @@ type ComposerProps = {
 };
 
 export default function Composer({
+  draft,
+  onDraftChange,
   mode,
   onModeChange,
   model,
   onModelChange,
+  backend,
+  onBackendChange,
+  backendLocked,
   effort,
   onEffortChange,
   autoEffort,
@@ -107,15 +147,20 @@ export default function Composer({
   canCompact = true,
   tokensUsed,
   contextWindow,
+  cacheWarm = false,
   disabled,
   streaming,
   pendingQuestion,
   onSubmitAnswer,
   queuedMessages,
+  runningTasks,
   onQueue,
   onRemoveQueued,
 }: ComposerProps) {
-  const [text, setText] = useState('');
+  // The draft text is owned by the instance (see props). `setText` writes
+  // through to instance state so it persists per-tab.
+  const text = draft;
+  const setText = onDraftChange;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [imageError, setImageError] = useState<string | null>(null);
   // Auto-effort flow: `suggesting` is true while the classifier runs; `pending`
@@ -128,6 +173,17 @@ export default function Composer({
   } | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // On (re)mount — e.g. switching to this instance's tab, which remounts the
+  // keyed <Composer> — size the textarea to fit the restored draft so a
+  // multi-line draft isn't clipped to a single row.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+    // Mount-only: the per-instance key handles re-sizing on tab switches.
+  }, []);
 
   const clearInput = () => {
     setText('');
@@ -267,6 +323,26 @@ export default function Composer({
   const sendEnabled =
     hasInput && !disabled && !isAwaitingAnswer && !busyWithSuggestion;
   const queue = queuedMessages ?? [];
+  /*
+   * Only work that genuinely outlives the turn belongs in this strip.
+   *
+   * The SDK registers a task for ANY shell still running after ~2 seconds —
+   * not because it was backgrounded, but so it can offer Ctrl+B. Showing every
+   * `task_started` here meant an ordinary `npm run build` was announced as a
+   * "background task" while it was in fact blocking the turn, and it was
+   * already visible as a running tool card two inches above. `isBackgrounded`
+   * is the SDK's own distinction.
+   */
+  const tasks = (runningTasks ?? []).filter((t) => t.isBackgrounded);
+  const agentCount = tasks.filter((t) => t.subagentType).length;
+  const shellCount = tasks.length - agentCount;
+  const taskSummary =
+    [
+      agentCount > 0 && `${agentCount} agent${agentCount === 1 ? '' : 's'}`,
+      shellCount > 0 && `${shellCount} background task${shellCount === 1 ? '' : 's'}`,
+    ]
+      .filter(Boolean)
+      .join(' · ') + ' running';
 
   return (
     <div
@@ -333,15 +409,56 @@ export default function Composer({
           />
         </div>
       )}
+      {tasks.length > 0 && (
+        <CollapsiblePanel
+          tone="fuchsia"
+          icon={
+            agentCount > 0 ? (
+              <Bot className="h-3 w-3 shrink-0 animate-pulse" />
+            ) : (
+              <Terminal className="h-3 w-3 shrink-0 animate-pulse" />
+            )
+          }
+          summary={taskSummary}
+        >
+          <ul className="flex flex-col gap-1">
+            {tasks.map((t) => (
+              <li
+                key={t.taskId}
+                className="flex items-center gap-1.5 truncate text-[11px] text-fuchsia-100/90"
+              >
+                <span
+                  className={cn(
+                    'shrink-0 rounded-full px-1.5 py-0.5 text-[10px]',
+                    // A backgrounded shell is not an agent. Both arrive on the
+                    // same task_started event, and badging them alike is why a
+                    // dev server restart looked like an agent appearing out of
+                    // nowhere.
+                    t.subagentType
+                      ? 'bg-fuchsia-500/15 text-fuchsia-300'
+                      : 'bg-foreground/10 text-muted-foreground',
+                  )}
+                >
+                  {t.subagentType ?? 'shell'}
+                </span>
+                <span className="truncate">{t.description || 'working…'}</span>
+                {t.lastToolName && (
+                  <span className="shrink-0 text-[10px] text-fuchsia-300/70">
+                    · {t.lastToolName}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </CollapsiblePanel>
+      )}
       {queue.length > 0 && (
-        <div className="flex flex-col gap-1 rounded-lg border border-amber-400/30 bg-amber-500/[0.06] px-2 py-1.5">
-          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-amber-200/80">
-            <Clock className="h-3 w-3" />
-            <span>
-              {queue.length} message{queue.length === 1 ? '' : 's'} queued —
-              will send after the current turn
-            </span>
-          </div>
+        <CollapsiblePanel
+          tone="amber"
+          defaultOpen
+          icon={<Clock className="h-3 w-3 shrink-0" />}
+          summary={`${queue.length} message${queue.length === 1 ? '' : 's'} queued — will send after the current turn`}
+        >
           <ul className="flex flex-col gap-1">
             {queue.map((q) => {
               const summary = q.text || (q.images?.length ? '(images only)' : '');
@@ -389,7 +506,7 @@ export default function Composer({
               );
             })}
           </ul>
-        </div>
+        </CollapsiblePanel>
       )}
       <textarea
         ref={taRef}
@@ -415,12 +532,25 @@ export default function Composer({
         className="w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-6 outline-none placeholder:text-muted-foreground/70 disabled:opacity-60"
       />
       <div className="flex items-center justify-between gap-2 px-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {/* One swipeable row on a phone rather than three wrapped ones. These
+            pills are ~500px of nowrap content; wrapping them at 390px eats
+            most of the space left above the keyboard, so below `sm` the row
+            scrolls sideways instead. `[&>*]:shrink-0` stops the children being
+            squeezed to fit — without it they compress instead of overflowing,
+            and nothing scrolls. */}
+        <div className="scrollbar-thin flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto [&>*]:shrink-0 sm:flex-wrap sm:overflow-x-visible">
           <ModePicker mode={mode} onChange={onModeChange} />
+          <BackendPicker
+            backend={backend}
+            onChange={onBackendChange}
+            locked={backendLocked}
+            disabled={disabled}
+          />
           <ModelPicker
             model={model}
             onChange={onModelChange}
             disabled={disabled}
+            backend={backend}
           />
           <EffortPicker
             effort={effort}
@@ -438,6 +568,10 @@ export default function Composer({
             disabled={disabled || streaming}
             className={ghostBtn}
             title="Attach images"
+            // The label is hidden below `sm` and `title` never shows on touch,
+            // so without this the button is unnamed on exactly the devices
+            // that cannot reveal its tooltip.
+            aria-label="Attach images"
           >
             <ImageIcon className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Image</span>
@@ -452,6 +586,7 @@ export default function Composer({
                 ? 'Compact conversation (summarize past turns)'
                 : 'Compact requires an active conversation'
             }
+            aria-label="Compact conversation"
           >
             <Minimize2 className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Compact</span>
@@ -466,6 +601,12 @@ export default function Composer({
           />
         </div>
         <div className="flex items-center gap-2.5">
+          <CreditEstimate
+            model={model}
+            contextTokens={tokensUsed}
+            draft={text}
+            cacheWarm={cacheWarm}
+          />
           <TokenCircle used={tokensUsed} total={contextWindow} />
           {streaming && (
             <button

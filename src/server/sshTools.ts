@@ -19,71 +19,34 @@ import path from 'node:path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { SFTPWrapper } from 'ssh2';
-import { getHost, type ConnectOpts, type RemoteHost } from './sshHosts';
-import { getStoredSshPassword, getWorkspace } from './workspaces';
+import { connectOptsForWorkspace, getHost, type RemoteHost } from './sshHosts';
 import { parseCwd } from '@/lib/cwd';
+import {
+  buildBashCommand,
+  buildGlobCommand,
+  buildLsCommand,
+  buildMkdirpCommand,
+  buildWindowsGrepCommand,
+  posixQuote,
+  resolveRemotePath,
+  type RemotePlatform,
+} from './remoteShell';
 
-type ContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; data: string; mimeType: string };
+// Result shape, `cat -n` rendering and the image/binary rules are shared with
+// the `local` server so both look identical to the model — see fileToolShared.
+import {
+  IMAGE_MIME_BY_EXT,
+  READ_DEFAULT_LIMIT,
+  err,
+  image,
+  ok,
+  renderTextRead,
+  type ToolResult,
+} from './fileToolShared';
 
-type ToolResult = {
-  content: ContentBlock[];
-  isError?: boolean;
-};
-
-function ok(text: string): ToolResult {
-  return { content: [{ type: 'text', text }] };
-}
-function err(text: string): ToolResult {
-  return { content: [{ type: 'text', text }], isError: true };
-}
-function image(data: string, mimeType: string, note?: string): ToolResult {
-  const content: ContentBlock[] = [{ type: 'image', data, mimeType }];
-  if (note) content.unshift({ type: 'text', text: note });
-  return { content };
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-function resolveRemote(p: string, base: string): string {
-  if (p.startsWith('/')) return p;
-  // POSIX-style join; the remote host is assumed POSIX.
-  return path.posix.join(base, p);
-}
-
-/** Default number of lines the built-in Read tool returns when no limit is given. */
-const READ_DEFAULT_LIMIT = 2000;
-/**
- * Mirror of the built-in Read tool's `<system-reminder>` placeholder for empty
- * files. The CLI uses this exact wording; matching it keeps the model's
- * reaction identical regardless of whether the file lives locally or remotely.
- */
-const EMPTY_FILE_REMINDER =
-  '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>';
-
-const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-};
-
-/**
- * `cat -n` style line numbering: 6-char right-aligned line number + tab +
- * content. This is the exact format the built-in Read tool returns, which the
- * Edit tool's description warns the model about ("preserve the exact
- * indentation … AFTER the line number prefix"). Matching it keeps prompts
- * portable between local and remote workspaces.
- */
-function formatCatN(lines: string[], firstLineNumber: number): string {
-  return lines
-    .map((line, i) => `${String(firstLineNumber + i).padStart(6, ' ')}\t${line}`)
-    .join('\n');
-}
+// Path resolution + shell-command construction are OS-aware; see
+// ./remoteShell. `resolveRemote` below binds the resolver to the connection's
+// detected platform so each tool body can stay terse.
 
 async function sftpStat(
   sftp: SFTPWrapper,
@@ -140,41 +103,59 @@ async function writeRemoteFile(
   });
 }
 
-/**
- * Detect binary content the same way `grep -I` / git do — sniff for a NUL byte
- * in the first chunk. Plain UTF-8 text never contains NUL; binary blobs almost
- * always do. Used to refuse text-mode display of binaries the model couldn't
- * meaningfully consume anyway.
- */
-function looksBinary(buf: Buffer): boolean {
-  const n = Math.min(buf.length, 8192);
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-  return false;
-}
 
 export type RemoteToolContext = {
   workspaceCwd: string; // ssh://...
 };
 
-export function createRemoteMcpServer(ctx: RemoteToolContext) {
+export async function createRemoteMcpServer(ctx: RemoteToolContext) {
   const parsed = parseCwd(ctx.workspaceCwd);
   if (parsed.kind !== 'ssh') {
     throw new Error('createRemoteMcpServer requires an ssh:// workspace cwd');
   }
-  const ws = getWorkspace(ctx.workspaceCwd);
-  const stored = getStoredSshPassword(ctx.workspaceCwd);
-  const opts: ConnectOpts = {
-    host: parsed.host,
-    port: parsed.port,
-    user: parsed.user,
-    identityPath: ws?.sshIdentityPath ?? null,
-    useAgent: ws?.sshUseAgent ?? false,
-    expectedHostFingerprint: ws?.sshKnownHostFp ?? null,
-    password: stored ?? undefined,
-  };
+  const opts = connectOptsForWorkspace(ctx.workspaceCwd);
+  if (!opts) {
+    throw new Error('createRemoteMcpServer requires an ssh:// workspace cwd');
+  }
   const baseDir = parsed.path;
 
   const host = (): Promise<RemoteHost> => getHost(opts);
+
+  // Detect the remote OS up front, but ONLY to phrase the tool descriptions —
+  // static hint text the model reads once. If the probe can't run at
+  // construction time (host briefly unreachable), we fall back to posix
+  // phrasing; the actual command/path logic never trusts this snapshot.
+  let describedPlatform: RemotePlatform = 'posix';
+  try {
+    describedPlatform = await (await host()).platform();
+  } catch {
+    describedPlatform = 'posix';
+  }
+  const isWindows = describedPlatform === 'windows';
+
+  // Runtime platform, resolved PER CALL from the host's memoised probe. A
+  // construction-time misdetection (one dropped `uname` on a lossy link) must
+  // not poison every later write/edit/glob for the whole session — which is
+  // exactly what froze a Windows host as posix and mangled its paths. The
+  // probe is memoised on the host, so this is a cheap cached read once known.
+  const livePlatform = async (): Promise<RemotePlatform> => {
+    try {
+      return await (await host()).platform();
+    } catch {
+      return describedPlatform;
+    }
+  };
+  const resolveRemote = async (p: string): Promise<string> =>
+    resolveRemotePath(p, baseDir, await livePlatform());
+
+  // Appended to shell-running tool descriptions so the model writes native
+  // commands from the first call instead of failing on POSIX assumptions.
+  const bashOsNote = isWindows
+    ? `\n\nIMPORTANT: this remote host is WINDOWS. Your command is executed in PowerShell (already cd'd to the workspace). Write PowerShell/Windows commands — e.g. \`Get-ChildItem\`, \`Get-Content\`, \`Select-String\`, \`Remove-Item\` — NOT POSIX/bash (\`ls\`, \`cat\`, \`grep\`). Paths use Windows form (C:\\Users\\... or /C:/Users/...).`
+    : '';
+  const pathOsNote = isWindows
+    ? ` This remote host is Windows: paths use Windows form (e.g. C:\\Users\\you\\file.txt or /C:/Users/you/file.txt); workspace-relative paths resolve against the workspace root.`
+    : '';
 
   return createSdkMcpServer({
     name: 'remote',
@@ -185,7 +166,8 @@ export function createRemoteMcpServer(ctx: RemoteToolContext) {
         'bash',
         `Execute a shell command on the remote SSH host (${parsed.user}@${parsed.host}). ` +
           `Runs in ${baseDir} unless an absolute cd is included. Streams stdout+stderr back. ` +
-          `Use this instead of the built-in Bash tool — that one runs locally and won't see the remote files.`,
+          `Use this instead of the built-in Bash tool — that one runs locally and won't see the remote files.` +
+          bashOsNote,
         {
           command: z.string().describe('Command to execute on the remote host'),
           description: z
@@ -202,7 +184,11 @@ export function createRemoteMcpServer(ctx: RemoteToolContext) {
         },
         async (args): Promise<ToolResult> => {
           const h = await host();
-          const wrapped = `cd ${shellQuote(baseDir)} 2>/dev/null; ${args.command}`;
+          const wrapped = buildBashCommand(
+            baseDir,
+            args.command,
+            await livePlatform(),
+          );
           const timeout = args.timeout_ms ?? 120_000;
           let timer: NodeJS.Timeout | null = null;
           let timedOut = false;
@@ -249,7 +235,8 @@ Usage:
 - Results are returned using cat -n format, with line numbers starting at 1
 - This tool allows reading images (eg PNG, JPG, GIF, WEBP) from the remote host. When reading an image file the contents are presented visually so you (the multimodal model) can see them.
 - This tool can only read files, not directories. To list a directory, use the ls tool instead.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.`,
+- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.` +
+          pathOsNote,
         {
           file_path: z
             .string()
@@ -276,7 +263,7 @@ Usage:
         async (args): Promise<ToolResult> => {
           const h = await host();
           const sftp = await h.sftp();
-          const abs = resolveRemote(args.file_path, baseDir);
+          const abs = await resolveRemote(args.file_path);
           let stat;
           try {
             stat = await sftpStat(sftp, abs);
@@ -323,40 +310,14 @@ Usage:
               `Failed to read ${abs}: ${e instanceof Error ? e.message : 'unknown error'}`,
             );
           }
-          if (buf.length === 0) {
-            return ok(EMPTY_FILE_REMINDER);
-          }
-          if (looksBinary(buf)) {
-            return err(
-              `${abs} appears to be a binary file (${stat.size} bytes). The remote read tool only renders text files and the supported image types (png, jpg, jpeg, gif, webp).`,
-            );
-          }
-          const text = buf.toString('utf8');
-          const allLines = text.split('\n');
-          // Mirror cat -n: a file ending in "\n" produces a trailing empty
-          // "line" via split; drop it so line counts match `wc -l` + 1.
-          if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
-            allLines.pop();
-          }
-          const totalLines = allLines.length;
-          const startIdx = Math.max(0, (args.offset ?? 1) - 1);
-          const limit = args.limit ?? READ_DEFAULT_LIMIT;
-          const endIdx = Math.min(allLines.length, startIdx + limit);
-          if (startIdx >= totalLines && totalLines > 0) {
-            return ok(
-              `(offset ${args.offset} is past the end of the file — total ${totalLines} lines)`,
-            );
-          }
-          const slice = allLines.slice(startIdx, endIdx);
-          const formatted = formatCatN(slice, startIdx + 1);
-          let suffix = '';
-          if (endIdx < totalLines) {
-            suffix =
-              `\n\n(... ${totalLines - endIdx} more line${
-                totalLines - endIdx === 1 ? '' : 's'
-              }. Pass offset=${endIdx + 1} to continue reading.)`;
-          }
-          return ok(formatted + suffix);
+          return renderTextRead({
+            buf,
+            label: abs,
+            offset: args.offset,
+            limit: args.limit,
+            binaryHint:
+              'The remote read tool only renders text files and the supported image types (png, jpg, jpeg, gif, webp).',
+          });
         },
       ),
 
@@ -373,7 +334,8 @@ Usage:
 - If this is an existing file, you MUST use the remote read tool first to read the file's contents. This tool will fail if you did not read the file first.
 - Prefer the remote edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
 - NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`,
+- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.` +
+          pathOsNote,
         {
           file_path: z
             .string()
@@ -385,12 +347,12 @@ Usage:
         async (args): Promise<ToolResult> => {
           const h = await host();
           const sftp = await h.sftp();
-          const abs = resolveRemote(args.file_path, baseDir);
+          const abs = await resolveRemote(args.file_path);
           try {
-            // Ensure parent directory exists.
+            // Ensure parent directory exists (OS-aware mkdir -p).
             const parent = path.posix.dirname(abs);
             if (parent && parent !== '/') {
-              await h.exec(`mkdir -p ${shellQuote(parent)}`);
+              await h.exec(buildMkdirpCommand(parent, await livePlatform()));
             }
             await writeRemoteFile(sftp, abs, args.content);
             return ok(`Wrote ${abs} (${args.content.length} bytes)`);
@@ -416,7 +378,8 @@ Usage:
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
-- Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`,
+- Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.` +
+          pathOsNote,
         {
           file_path: z
             .string()
@@ -433,7 +396,7 @@ Usage:
         async (args): Promise<ToolResult> => {
           const h = await host();
           const sftp = await h.sftp();
-          const abs = resolveRemote(args.file_path, baseDir);
+          const abs = await resolveRemote(args.file_path);
           try {
             const original = await readRemoteText(sftp, abs);
             if (args.old_string === args.new_string) {
@@ -476,11 +439,11 @@ Usage:
         },
         async (args): Promise<ToolResult> => {
           const h = await host();
-          const root = args.path ? resolveRemote(args.path, baseDir) : baseDir;
-          // bash globstar handles **, then printf one path per line.
-          const cmd =
-            `bash -c 'shopt -s globstar nullglob dotglob; cd ${shellQuote(root)} && ` +
-            `for f in ${args.pattern}; do printf "%s\\n" "$f"; done'`;
+          const root = args.path ? await resolveRemote(args.path) : baseDir;
+          // POSIX: bash globstar + printf; Windows: Get-ChildItem -Recurse
+          // filtered by the glob translated to a regex. Both emit paths
+          // relative to `root`, one per line.
+          const cmd = buildGlobCommand(root, args.pattern, await livePlatform());
           const r = await h.exec(cmd);
           if (r.code !== 0) return err(r.stderr || `glob failed (exit ${r.code})`);
           const lines = r.stdout.split('\n').filter(Boolean);
@@ -510,24 +473,37 @@ Usage:
         },
         async (args): Promise<ToolResult> => {
           const h = await host();
-          const root = args.path ? resolveRemote(args.path, baseDir) : baseDir;
-          const haveRg = (await h.exec('command -v rg')).code === 0;
+          const root = args.path ? await resolveRemote(args.path) : baseDir;
           const max = args.max_results ?? 200;
           let cmd: string;
-          if (haveRg) {
-            cmd = `rg --color=never -n`;
-            if (args.case_insensitive) cmd += ' -i';
-            if (args.context) cmd += ` -C ${args.context}`;
-            if (args.glob) cmd += ` -g ${shellQuote(args.glob)}`;
-            cmd += ` ${shellQuote(args.pattern)} ${shellQuote(root)}`;
-            cmd += ` | head -n ${max}`;
+          if ((await livePlatform()) === 'windows') {
+            // Windows: PowerShell Select-String over a recursive listing.
+            cmd = buildWindowsGrepCommand({
+              root,
+              pattern: args.pattern,
+              glob: args.glob,
+              caseInsensitive: args.case_insensitive,
+              context: args.context,
+              max,
+            });
           } else {
-            cmd = `grep -RIn --color=never`;
-            if (args.case_insensitive) cmd += ' -i';
-            if (args.context) cmd += ` -C ${args.context}`;
-            if (args.glob) cmd += ` --include=${shellQuote(args.glob)}`;
-            cmd += ` ${shellQuote(args.pattern)} ${shellQuote(root)}`;
-            cmd += ` | head -n ${max}`;
+            // POSIX: ripgrep when present, else GNU grep.
+            const haveRg = (await h.exec('command -v rg')).code === 0;
+            if (haveRg) {
+              cmd = `rg --color=never -n`;
+              if (args.case_insensitive) cmd += ' -i';
+              if (args.context) cmd += ` -C ${args.context}`;
+              if (args.glob) cmd += ` -g ${posixQuote(args.glob)}`;
+              cmd += ` ${posixQuote(args.pattern)} ${posixQuote(root)}`;
+              cmd += ` | head -n ${max}`;
+            } else {
+              cmd = `grep -RIn --color=never`;
+              if (args.case_insensitive) cmd += ' -i';
+              if (args.context) cmd += ` -C ${args.context}`;
+              if (args.glob) cmd += ` --include=${posixQuote(args.glob)}`;
+              cmd += ` ${posixQuote(args.pattern)} ${posixQuote(root)}`;
+              cmd += ` | head -n ${max}`;
+            }
           }
           const r = await h.exec(cmd);
           if (r.code !== 0 && !r.stdout) {
@@ -545,8 +521,8 @@ Usage:
         },
         async (args): Promise<ToolResult> => {
           const h = await host();
-          const abs = resolveRemote(args.path, baseDir);
-          const r = await h.exec(`ls -la --time-style=long-iso ${shellQuote(abs)}`);
+          const abs = await resolveRemote(args.path);
+          const r = await h.exec(buildLsCommand(abs, await livePlatform()));
           if (r.code !== 0) return err(r.stderr || `ls failed (exit ${r.code})`);
           return ok(r.stdout);
         },

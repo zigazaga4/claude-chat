@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import type { NextRequest } from 'next/server';
 import { parseCwd } from '@/lib/cwd';
 import { getHost, type ConnectOpts } from '@/server/sshHosts';
+import { toWinPath } from '@/server/remoteShell';
 import { getStoredSshPassword, getWorkspace } from '@/server/workspaces';
 
 export const runtime = 'nodejs';
@@ -127,7 +128,7 @@ async function handleSsh(
 
   let abs = target;
   if (abs === '~' || abs.startsWith('~')) {
-    const home = (await host.exec('printf %s "$HOME"')).stdout.trim() || '/';
+    const home = await host.homeDir();
     abs = abs === '~' ? home : home + abs.slice(1);
   }
   if (!abs.startsWith('/')) abs = '/' + abs;
@@ -151,7 +152,14 @@ async function handleSsh(
     // Remote directory → run tar on the host, stream its stdout back.
     const parent = posixDirname(abs);
     const base = posixBasename(abs);
-    const cmd = `tar -czf - -C ${shq(parent)} -- ${shq(base)}`;
+    // POSIX: GNU/bsd tar. Windows: bsdtar (tar.exe, shipped on Windows 10+ /
+    // Server 2019+); the SSH exec channel is binary-clean, so the archive
+    // streams intact under the default cmd.exe shell.
+    const platform = await host.platform();
+    const cmd =
+      platform === 'windows'
+        ? `tar -c -z -f - -C "${toWinPath(parent)}" -- "${base}"`
+        : `tar -czf - -C ${shq(parent)} -- ${shq(base)}`;
     const stream = await host.execRaw(cmd);
     const body = nodeToWeb(stream as unknown as Readable, () => stream.destroy());
     return new Response(body, {

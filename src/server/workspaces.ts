@@ -91,12 +91,14 @@ export function getWorkspace(cwd: string): WorkspaceRow | null {
       `SELECT
          w.cwd, w.first_used, w.last_used, w.last_conversation_id,
          w.kind, w.ssh_identity_path, w.ssh_use_agent, w.ssh_known_host_fp, w.ssh_password_encrypted,
-         (SELECT COUNT(*) FROM conversations c WHERE c.cwd = w.cwd) AS conversation_count,
+         (SELECT COUNT(*) FROM conversations c
+           WHERE c.cwd = w.cwd AND c.ephemeral = 0)                AS conversation_count,
          lc.id          AS last_conv_id,
          lc.title       AS last_conv_title,
          lc.updated_at  AS last_conv_updated_at
        FROM workspaces w
-       LEFT JOIN conversations lc ON lc.id = w.last_conversation_id
+       LEFT JOIN conversations lc
+         ON lc.id = w.last_conversation_id AND lc.ephemeral = 0
        WHERE w.cwd = ?`,
     )
     .get(cwd);
@@ -181,13 +183,14 @@ export function listWorkspaces(): WorkspaceRow[] {
          w.ssh_use_agent,
          w.ssh_known_host_fp,
          w.ssh_password_encrypted,
-         (SELECT COUNT(*) FROM conversations c WHERE c.cwd = w.cwd) AS conversation_count,
+         (SELECT COUNT(*) FROM conversations c
+           WHERE c.cwd = w.cwd AND c.ephemeral = 0)                AS conversation_count,
          lc.id          AS last_conv_id,
          lc.title       AS last_conv_title,
          lc.updated_at  AS last_conv_updated_at
        FROM workspaces w
        LEFT JOIN conversations lc
-         ON lc.id = w.last_conversation_id
+         ON lc.id = w.last_conversation_id AND lc.ephemeral = 0
        ORDER BY w.last_used DESC`,
     )
     .all();

@@ -68,11 +68,11 @@ export async function GET(req: NextRequest) {
   const sftp = await host.sftp();
   let target = requested && requested.length > 0 ? requested : parsed.path || '~';
   if (target === '~' || target.startsWith('~')) {
-    const home = (await host.exec('printf %s "$HOME"')).stdout.trim() || '/';
+    const home = await host.homeDir();
     target = target === '~' ? home : home + target.slice(1);
   }
   if (!target.startsWith('/')) target = '/' + target;
-  const home = (await host.exec('printf %s "$HOME"')).stdout.trim() || '/';
+  const home = await host.homeDir();
 
   type ReadDirEntry = { filename: string; longname: string; attrs: { mode: number } };
   const list = await new Promise<ReadDirEntry[]>((resolve, reject) => {

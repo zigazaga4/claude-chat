@@ -184,6 +184,29 @@ export type ChatMessage = UserMessage | AssistantMessage | SystemMessage;
  * we can match the eventual `turn_started` event back to this queue entry
  * regardless of how it ends up being delivered.
  */
+/**
+ * A background subagent launched by the Agent/Task tool and still running.
+ *
+ * Async subagents outlive the turn that spawned them: the parent's tool_result
+ * says "launched" and the turn ends while the agent keeps working. Tracking
+ * them lets the UI show live agent activity instead of looking idle.
+ */
+export type RunningTask = {
+  taskId: string;
+  description: string;
+  subagentType: string | null;
+  /** Name of the tool the agent used most recently, when reported. */
+  lastToolName: string | null;
+  startedAt: number;
+  /** SDK discriminant: `local_bash`, `local_agent`, `local_workflow`, … */
+  taskType: string | null;
+  /**
+   * Whether this actually outlives the turn. False for a plain slow shell
+   * command, which the SDK still registers as a task after ~2 seconds.
+   */
+  isBackgrounded: boolean;
+};
+
 export type QueuedMessage = {
   id: string;
   userMessageId: string;

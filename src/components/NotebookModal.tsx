@@ -101,13 +101,13 @@ function NotebookEditor({
   // Portal to <body>: ancestors with backdrop-filter become containing blocks
   // for `fixed` descendants and would trap the overlay inside their box.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
+      <div className="relative flex max-h-[85dvh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl">
         <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
             <NotebookPen className="h-4 w-4 shrink-0 text-primary" />

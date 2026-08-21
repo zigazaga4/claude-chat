@@ -73,7 +73,11 @@ export default function AskQuestionPicker({ pending, onSubmit, disabled }: Props
     // Capped to the viewport so a long question list scrolls inside the
     // panel instead of pushing the composer off-screen. Header and the
     // submit row stay pinned; only the questions scroll.
-    <div className="flex max-h-[55vh] flex-col gap-3">
+    //
+    // `dvh` and 45 rather than 55: this sits inside the composer, so on a
+    // phone it shares what little is left above the keyboard with the submit
+    // row — and `vh` would measure a viewport taller than the visible one.
+    <div className="flex max-h-[45dvh] flex-col gap-3">
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-amber-300/90">
         <HelpCircle className="h-3.5 w-3.5" />
         <span>Claude is asking{pending.questions.length > 1 ? ` ${pending.questions.length} questions` : ''}</span>
