@@ -169,6 +169,30 @@ export function setWorkspaceLastConversation(
   ).run(cwd, now, now, conversationId);
 }
 
+/**
+ * Forget a workspace's "last conversation" pointer, but only if it still names
+ * `conversationId`.
+ *
+ * The column has no foreign key and the join that reads it (`getWorkspace`,
+ * `listWorkspaces`) matches on id alone, without checking that the conversation
+ * still lives in this workspace. So a conversation moved elsewhere would go on
+ * being advertised as this folder's most recent one — and clicking the folder
+ * would open a conversation that is no longer in it.
+ *
+ * Conditional on purpose: by the time this runs the destination may already
+ * have claimed the same id, and an unconditional clear would race it.
+ */
+export function clearWorkspaceLastConversation(
+  cwd: string,
+  conversationId: string,
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE workspaces SET last_conversation_id = NULL
+      WHERE cwd = ? AND last_conversation_id = ?`,
+  ).run(cwd, conversationId);
+}
+
 export function listWorkspaces(): WorkspaceRow[] {
   const db = getDb();
   const rows = db

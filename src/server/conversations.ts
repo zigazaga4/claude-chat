@@ -5,7 +5,11 @@ import type { ChatMessage, ContentBlock, ImageAttachmentBlock } from '@/lib/type
 import { isSshCwd } from '@/lib/cwd';
 import { DEFAULT_BACKEND, isValidBackend, type ChatBackend } from '@/lib/backends';
 import { getDb } from './db';
-import { setWorkspaceLastConversation } from './workspaces';
+import {
+  clearWorkspaceLastConversation,
+  getWorkspace,
+  setWorkspaceLastConversation,
+} from './workspaces';
 
 export type ConversationRow = {
   id: string;
@@ -147,6 +151,21 @@ export function keepConversation(id: string): boolean {
 }
 
 /**
+ * The cwd the Agent SDK is actually launched with, which is what decides where
+ * the CLI writes the transcript.
+ *
+ * For a local workspace it is the workspace itself. For an SSH workspace the
+ * SDK still needs a real local directory to run in, so every remote
+ * conversation runs against the user's home — `/api/chat` computes the same
+ * thing at launch time. Both the `origin` tag and the raw cwd are consulted
+ * because rows written before the tag existed can carry an `ssh://` cwd with
+ * the default `local` origin.
+ */
+function sdkCwdFor(cwd: string, origin?: string): string {
+  return origin === 'ssh' || isSshCwd(cwd) ? os.homedir() : cwd;
+}
+
+/**
  * Delete a conversation for good: the DB row (messages + notebook cascade)
  * and the CLI transcript that backs it, so a discarded throwaway can't come
  * back as an "external" session in the picker.
@@ -160,16 +179,178 @@ export function deleteConversation(id: string): boolean {
     .get(id);
   const info = db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
   if (row) {
-    // SSH conversations run the SDK against a local placeholder cwd (home),
-    // so that — not the ssh:// workspace — is where their transcript lives.
-    const sdkCwd = row.origin === 'ssh' || isSshCwd(row.cwd) ? os.homedir() : row.cwd;
     try {
-      fs.rmSync(sdkTranscriptPath(sdkCwd, id), { force: true });
+      fs.rmSync(sdkTranscriptPath(sdkCwdFor(row.cwd, row.origin), id), { force: true });
     } catch {
       /* transcript already gone or unreadable — the row is what matters */
     }
   }
   return info.changes > 0;
+}
+
+export type MoveConversationResult =
+  | {
+      ok: true;
+      /** Workspace it came from. */
+      from: string;
+      /** Workspace it lives in now. */
+      to: string;
+      /** Whether the CLI transcript had to be relocated on disk. */
+      transcriptMoved: boolean;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'not-found'
+        | 'unknown-destination'
+        | 'same-workspace'
+        | 'transcript-conflict'
+        | 'transcript-move-failed';
+      detail?: string;
+    };
+
+/**
+ * Move a conversation into another workspace — local or SSH, in any direction.
+ *
+ * The row is the easy half. The hard half is the CLI transcript: the Claude
+ * Code CLI derives its transcript folder from the cwd it was launched with, so
+ * `~/.claude/projects/<encoded sdk cwd>/<id>.jsonl` is exactly where `resume`
+ * will look on the next turn. Move the row without moving that file and the
+ * conversation still lists, still opens, and still shows every stored message —
+ * and then the first reply comes back with no memory of any of it, because the
+ * CLI quietly began a new session instead. Nothing about that failure looks
+ * like a failure, which is what makes it worth this much care.
+ *
+ * So the file moves first and the row second. A rename that fails leaves both
+ * halves where they were, which is merely a move that did not happen; a row
+ * that moves ahead of a stranded transcript is a conversation that has lost its
+ * mind. Ordering is the whole safety argument here.
+ *
+ * SSH is cheap by accident of that same asymmetry: remote conversations run the
+ * SDK against the local home directory, so every `ssh://` workspace shares one
+ * transcript folder and moving between two remotes touches no files at all.
+ * OpenCode conversations have no transcript on this side either — OpenCode owns
+ * its session store and takes the directory per prompt — so for those this is
+ * purely the row, and the next turn simply runs somewhere else.
+ *
+ * One thing this cannot do is reach into a client that already has the
+ * conversation open. `ensureConversation` re-binds the row from whatever cwd
+ * the client sends, and even paging messages does it, so a stale tab elsewhere
+ * will drag the conversation back the moment it is used. The caller is expected
+ * to re-point its own open instances; a tab on another device is out of reach.
+ */
+export function moveConversation(
+  id: string,
+  toCwd: string,
+  opts?: { fromCwd?: string },
+): MoveConversationResult {
+  const db = getDb();
+  const row = db
+    .prepare<[string], { cwd: string; origin: string }>(
+      `SELECT cwd, origin FROM conversations WHERE id = ?`,
+    )
+    .get(id);
+
+  // Sessions the CLI wrote directly have no row here — the picker surfaces them
+  // by reading the transcript folder. They are still perfectly movable, so
+  // adopt one into the database rather than dead-ending the button. The caller
+  // says which workspace it was listed under; the transcript has to actually be
+  // there for that claim to be worth anything.
+  let adoptStat: fs.Stats | null = null;
+  if (!row && opts?.fromCwd) {
+    try {
+      adoptStat = fs.statSync(sdkTranscriptPath(sdkCwdFor(opts.fromCwd), id));
+    } catch {
+      adoptStat = null;
+    }
+  }
+  if (!row && !adoptStat) return { ok: false, reason: 'not-found' };
+
+  const fromCwd = row ? row.cwd : (opts!.fromCwd as string);
+  const fromOrigin = row ? row.origin : isSshCwd(fromCwd) ? 'ssh' : 'local';
+  if (fromCwd === toCwd) return { ok: false, reason: 'same-workspace' };
+
+  // Only somewhere cloudchat already knows about. Beyond keeping the id space
+  // honest, this is what stops an unknown destination from being created here
+  // as a plain local folder — `touchWorkspace` cannot tell that an `ssh://`
+  // path needs `kind = 'ssh'` and the SSH credentials that go with it.
+  if (!getWorkspace(toCwd)) return { ok: false, reason: 'unknown-destination' };
+
+  const toOrigin = isSshCwd(toCwd) ? 'ssh' : 'local';
+  const fromSdkCwd = sdkCwdFor(fromCwd, fromOrigin);
+  const toSdkCwd = sdkCwdFor(toCwd, toOrigin);
+
+  let transcriptMoved = false;
+  let movedFrom = '';
+  let movedTo = '';
+  if (fromSdkCwd !== toSdkCwd) {
+    const src = sdkTranscriptPath(fromSdkCwd, id);
+    const dst = sdkTranscriptPath(toSdkCwd, id);
+    if (fs.existsSync(src)) {
+      // Session ids are UUIDs, so this is close to impossible — but a rename
+      // over the top would destroy a real history, and refusing costs nothing.
+      if (fs.existsSync(dst)) return { ok: false, reason: 'transcript-conflict' };
+      try {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        // Both paths sit under ~/.claude/projects, so this is a same-filesystem
+        // rename: atomic, and instant even for the multi-megabyte transcripts a
+        // long conversation accumulates.
+        fs.renameSync(src, dst);
+        transcriptMoved = true;
+        movedFrom = src;
+        movedTo = dst;
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'transcript-move-failed',
+          detail: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
+  }
+
+  try {
+    db.transaction(() => {
+      if (row) {
+        // `updated_at` is deliberately left alone. It orders the sidebar by
+        // when the conversation was last *worked in*, and filing something
+        // away is not work on it — bumping it would shove an old thread to the
+        // top of its new folder.
+        db.prepare(`UPDATE conversations SET cwd = ?, origin = ? WHERE id = ?`).run(
+          toCwd,
+          toOrigin,
+          id,
+        );
+      } else {
+        const stat = adoptStat as fs.Stats;
+        // Mirrors how the picker presents an unadopted transcript: timestamps
+        // from the file, no title, and the Agent SDK by definition — a Claude
+        // Code transcript could not have come from anywhere else.
+        db.prepare(
+          `INSERT INTO conversations (id, cwd, title, created_at, updated_at, origin, ephemeral, backend)
+           VALUES (?, ?, NULL, ?, ?, ?, 0, 'sdk')`,
+        ).run(id, toCwd, Math.floor(stat.ctimeMs), Math.floor(stat.mtimeMs), toOrigin);
+      }
+      clearWorkspaceLastConversation(fromCwd, id);
+    })();
+  } catch (e) {
+    // Put the transcript back, so a failed move is a move that did not happen
+    // rather than one that half did.
+    if (transcriptMoved) {
+      try {
+        fs.renameSync(movedTo, movedFrom);
+      } catch {
+        /* nothing further to try; the row is unchanged either way */
+      }
+    }
+    return {
+      ok: false,
+      reason: 'transcript-move-failed',
+      detail: e instanceof Error ? e.message : String(e),
+    };
+  }
+
+  return { ok: true, from: fromCwd, to: toCwd, transcriptMoved };
 }
 
 /**

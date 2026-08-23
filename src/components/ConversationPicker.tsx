@@ -1,11 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { Ghost, Loader2, MessageSquarePlus, RefreshCw, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  FolderInput,
+  Ghost,
+  Loader2,
+  MessageSquarePlus,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ChatMessage } from '@/lib/types';
 import { DEFAULT_BACKEND, type ChatBackend } from '@/lib/backends';
 import { useInstances } from '@/state/instances';
+import MoveConversationModal from './MoveConversationModal';
 
 type ConversationRow = {
   id: string;
@@ -34,12 +42,31 @@ function shortId(id: string): string {
 }
 
 export default function ConversationPicker() {
-  const { active, openConversation, openNewConversation } = useInstances();
+  const { active, instances, patch, openConversation, openNewConversation } =
+    useInstances();
   const cwd = active.cwd;
   const [rows, setRows] = useState<ConversationRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Conversation being filed into another folder (null = closed). */
+  const [moveFor, setMoveFor] = useState<{ id: string; label: string } | null>(
+    null,
+  );
+
+  /**
+   * Conversations with a turn in flight, in any tab. Moving one of those would
+   * leave the running turn working in the folder it no longer belongs to.
+   */
+  const streamingIds = useMemo(
+    () =>
+      new Set(
+        instances
+          .filter((i) => i.streaming && i.sessionId)
+          .map((i) => i.sessionId as string),
+      ),
+    [instances],
+  );
 
   const load = useCallback(async () => {
     if (!cwd) return;
@@ -185,12 +212,15 @@ export default function ConversationPicker() {
             const isOpening = openingId === row.id;
             const label = row.title ?? `Conversation ${shortId(row.id)}`;
             return (
-              <li key={row.id}>
+              <li
+                key={row.id}
+                className="group/row flex items-center rounded-xl border border-border/50 bg-card/40 transition-colors hover:border-blue-400/40 hover:bg-card/70"
+              >
                 <button
                   type="button"
                   onClick={() => void onPick(row)}
                   disabled={isOpening}
-                  className="group/row flex w-full items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-3 py-2.5 text-left transition-colors hover:border-blue-400/40 hover:bg-card/70 disabled:opacity-60"
+                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left disabled:opacity-60"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -228,10 +258,50 @@ export default function ConversationPicker() {
                     </span>
                   )}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setMoveFor({ id: row.id, label })}
+                  disabled={streamingIds.has(row.id)}
+                  title={
+                    streamingIds.has(row.id)
+                      ? 'Still replying — wait for the turn to finish before moving it'
+                      : 'Move to another folder'
+                  }
+                  aria-label="Move this conversation to another folder"
+                  className={cn(
+                    'mr-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-400 focus-visible:opacity-100 group-hover/row:opacity-100 touch:opacity-100',
+                    streamingIds.has(row.id) && 'cursor-not-allowed opacity-30',
+                  )}
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                </button>
               </li>
             );
           })}
         </ul>
+      )}
+
+      {moveFor && (
+        <MoveConversationModal
+          open
+          conversationId={moveFor.id}
+          fromCwd={cwd}
+          label={moveFor.label}
+          onClose={() => setMoveFor(null)}
+          onMoved={(toCwd) => {
+            // Re-point any tab that has it open. That tab sends its own cwd
+            // with every turn and the server treats it as the conversation's
+            // home, so one left behind would move it straight back. Tabs merely
+            // sitting on this list are untouched — their cwd is this folder,
+            // which has not changed.
+            for (const inst of instances) {
+              if (inst.sessionId === moveFor.id && inst.view === 'conversation') {
+                patch(inst.id, { cwd: toCwd });
+              }
+            }
+            void load();
+          }}
+        />
       )}
     </div>
   );

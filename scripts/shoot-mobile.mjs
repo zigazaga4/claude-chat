@@ -7,7 +7,11 @@
  * mobile UI most worth looking at. Node 24 ships a global WebSocket, so this
  * needs no dependencies.
  *
- *   node scripts/shoot-mobile.mjs <baseUrl> <password> <out.png> [clickSelector]
+ *   node scripts/shoot-mobile.mjs <baseUrl> <password> <out.png> [clicks]
+ *
+ * `clicks` is one CSS selector, or several joined by `>>` to click in order —
+ * enough to reach anything behind a disclosure or a modal, which a single
+ * click cannot.
  */
 
 const [, , base, password, out, clickSelector] = process.argv;
@@ -64,13 +68,17 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 await send('Page.enable');
 await send('Runtime.enable');
 
-// A real phone viewport, including the device pixel ratio — `--window-size`
-// alone leaves deviceScaleFactor at 1 and misses DPR-dependent layout.
+// A real phone viewport by default, including the device pixel ratio —
+// `--window-size` alone leaves deviceScaleFactor at 1 and misses DPR-dependent
+// layout. CC_SHOT_W/H override it for the desktop layout, where the sidebar is
+// on screen instead of behind the drawer.
+const width = Number(process.env.CC_SHOT_W) || 390;
+const height = Number(process.env.CC_SHOT_H) || 844;
 await send('Emulation.setDeviceMetricsOverride', {
-  width: 390,
-  height: 844,
+  width,
+  height,
   deviceScaleFactor: 2,
-  mobile: true,
+  mobile: width < 768,
 });
 // Makes `@media (hover: none)` and `(pointer: coarse)` match, which is what
 // gates most of the mobile CSS. Without it this would screenshot the desktop
@@ -98,12 +106,12 @@ console.log('  login status:', login.result.value);
 await send('Page.navigate', { url: `${base}/` });
 await wait(3500);
 
-if (clickSelector) {
+for (const sel of (clickSelector ?? '').split('>>').map((s) => s.trim()).filter(Boolean)) {
   const clicked = await send('Runtime.evaluate', {
     returnByValue: true,
-    expression: `(() => { const el = document.querySelector(${JSON.stringify(clickSelector)}); if (!el) return 'NOT FOUND'; el.click(); return 'clicked'; })()`,
+    expression: `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'NOT FOUND'; el.scrollIntoView({block:'center'}); el.click(); return 'clicked'; })()`,
   });
-  console.log('  click', clickSelector, '->', clicked.result.value);
+  console.log('  click', sel, '->', clicked.result.value);
   await wait(1200);
 }
 

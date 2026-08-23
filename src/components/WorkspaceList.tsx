@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
   Folder,
+  FolderInput,
   FolderOpen,
   Ghost,
   Globe,
@@ -25,6 +26,7 @@ import { useInstances } from '@/state/instances';
 import ConnectSshModal from './ConnectSshModal';
 import FolderPicker from './FolderPicker';
 import McpServersModal from './McpServersModal';
+import MoveConversationModal from './MoveConversationModal';
 import NotebookModal from './NotebookModal';
 import RemoteFolderPicker from './RemoteFolderPicker';
 
@@ -153,7 +155,8 @@ function groupSshByHost(rows: WorkspaceRow[]): SshHostGroup[] {
 }
 
 export default function WorkspaceList() {
-  const { active, patch, openConversation, openNewConversation } = useInstances();
+  const { active, instances, patch, openConversation, openNewConversation } =
+    useInstances();
   const [workspaces, setWorkspaces] = useState<WorkspaceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +177,10 @@ export default function WorkspaceList() {
   const [mcpFor, setMcpFor] = useState<{ cwd: string; label: string } | null>(
     null,
   );
+  /** Conversation being filed into another folder (null = closed). */
+  const [moveFor, setMoveFor] = useState<
+    { id: string; cwd: string; label: string } | null
+  >(null);
   const [loginByCwd, setLoginByCwd] = useState<Record<string, LoginPhase>>({});
   const fetchedCwdsRef = useRef<Set<string>>(new Set());
   const autoLoginAttemptedRef = useRef<Set<string>>(new Set());
@@ -211,6 +218,51 @@ export default function WorkspaceList() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadWorkspaces();
   }, [loadWorkspaces]);
+
+  /**
+   * Conversations with a turn in flight, in any tab — not just the active one.
+   *
+   * Moving one of these is the single unsafe case: the running turn holds the
+   * old folder for as long as it lasts, so its tools would go on reading and
+   * writing there while the sidebar claims it lives somewhere else.
+   */
+  const streamingIds = useMemo(
+    () =>
+      new Set(
+        instances
+          .filter((i) => i.streaming && i.sessionId)
+          .map((i) => i.sessionId as string),
+      ),
+    [instances],
+  );
+
+  /**
+   * Re-read both folders and re-point any tab that has the conversation open.
+   *
+   * That last part is not cosmetic. An open tab keeps sending its own `cwd`
+   * with every turn — and even paging older messages sends it — and the server
+   * takes that as the conversation's home. A tab left pointing at the old
+   * folder would quietly move it straight back.
+   *
+   * Only tabs actually showing the conversation. A tab sitting on a folder's
+   * list can still carry a stale `sessionId` from the last thing it had open,
+   * and yanking its folder out from under the list it is browsing would be a
+   * surprise with nothing to do with the move.
+   */
+  const onMoved = useCallback(
+    (id: string, fromCwd: string, toCwd: string) => {
+      for (const inst of instances) {
+        if (inst.sessionId === id && inst.view === 'conversation') {
+          patch(inst.id, { cwd: toCwd });
+        }
+      }
+      fetchedCwdsRef.current.add(toCwd);
+      void loadConversations(fromCwd);
+      void loadConversations(toCwd);
+      void loadWorkspaces();
+    },
+    [instances, patch, loadConversations, loadWorkspaces],
+  );
 
   const ensureConvsLoaded = useCallback(
     (cwd: string) => {
@@ -705,58 +757,32 @@ export default function WorkspaceList() {
                                           `Conversation ${shortId(c.id)}`;
                                         return (
                                           <li key={c.id}>
-                                            <div
-                                              className={cn(
-                                                'group/conv flex w-full items-center gap-0.5 rounded pr-0.5 transition-colors',
-                                                isCur
-                                                  ? 'bg-emerald-500/15 text-emerald-50'
-                                                  : 'hover:bg-secondary',
-                                              )}
-                                            >
-                                              <button
-                                                type="button"
-                                                onClick={() =>
-                                                  void openConv(w.cwd, c)
-                                                }
-                                                disabled={openingId === c.id}
-                                                className={cn(
-                                                  'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left',
-                                                  openingId === c.id && 'opacity-60',
-                                                )}
-                                                title={label}
-                                              >
-                                                {isLast ? (
-                                                  <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
-                                                ) : (
-                                                  <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                                                )}
-                                                <span className="min-w-0 flex-1">
-                                                  <span className="block truncate text-[11.5px] leading-tight">
-                                                    {label}
-                                                  </span>
-                                                  <span className="block truncate text-[10px] text-muted-foreground/70">
-                                                    {formatRelative(c.updatedAt)}
-                                                    {c.source === 'sdk' &&
-                                                      ' · external'}
-                                                  </span>
-                                                </span>
-                                                {openingId === c.id && (
-                                                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-emerald-400" />
-                                                )}
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setNotebookFor({ id: c.id, cwd: w.cwd, label });
-                                                }}
-                                                title="View / edit notebook"
-                                                aria-label="View or edit this conversation's notebook"
-                                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-emerald-300 focus-visible:opacity-100 group-hover/conv:opacity-100 touch:opacity-100"
-                                              >
-                                                <NotebookPen className="h-3 w-3" />
-                                              </button>
-                                            </div>
+                                            <ConversationItem
+                                              label={label}
+                                              subtitle={`${formatRelative(c.updatedAt)}${
+                                                c.source === 'sdk' ? ' · external' : ''
+                                              }`}
+                                              tone="emerald"
+                                              isLast={isLast}
+                                              isCurrent={isCur}
+                                              opening={openingId === c.id}
+                                              streaming={streamingIds.has(c.id)}
+                                              onOpen={() => void openConv(w.cwd, c)}
+                                              onNotebook={() =>
+                                                setNotebookFor({
+                                                  id: c.id,
+                                                  cwd: w.cwd,
+                                                  label,
+                                                })
+                                              }
+                                              onMove={() =>
+                                                setMoveFor({
+                                                  id: c.id,
+                                                  cwd: w.cwd,
+                                                  label,
+                                                })
+                                              }
+                                            />
                                           </li>
                                         );
                                       })}
@@ -934,55 +960,24 @@ export default function WorkspaceList() {
                                   c.title ?? `Conversation ${shortId(c.id)}`;
                                 return (
                                   <li key={c.id}>
-                                    <div
-                                      className={cn(
-                                        'group/conv flex w-full items-center gap-0.5 rounded pr-0.5 transition-colors',
-                                        isCurrent
-                                          ? 'bg-blue-500/15 text-blue-100'
-                                          : 'hover:bg-secondary',
-                                      )}
-                                    >
-                                      <button
-                                        type="button"
-                                        onClick={() => void openConv(w.cwd, c)}
-                                        disabled={openingId === c.id}
-                                        className={cn(
-                                          'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left',
-                                          openingId === c.id && 'opacity-60',
-                                        )}
-                                        title={label}
-                                      >
-                                        {isLast ? (
-                                          <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
-                                        ) : (
-                                          <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                                        )}
-                                        <span className="min-w-0 flex-1">
-                                          <span className="block truncate text-[11.5px] leading-tight">
-                                            {label}
-                                          </span>
-                                          <span className="block truncate text-[10px] text-muted-foreground/70">
-                                            {formatRelative(c.updatedAt)}
-                                            {c.source === 'sdk' && ' · external'}
-                                          </span>
-                                        </span>
-                                        {openingId === c.id && (
-                                          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-400" />
-                                        )}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setNotebookFor({ id: c.id, cwd: w.cwd, label });
-                                        }}
-                                        title="View / edit notebook"
-                                        aria-label="View or edit this conversation's notebook"
-                                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-300 focus-visible:opacity-100 group-hover/conv:opacity-100 touch:opacity-100"
-                                      >
-                                        <NotebookPen className="h-3 w-3" />
-                                      </button>
-                                    </div>
+                                    <ConversationItem
+                                      label={label}
+                                      subtitle={`${formatRelative(c.updatedAt)}${
+                                        c.source === 'sdk' ? ' · external' : ''
+                                      }`}
+                                      tone="blue"
+                                      isLast={isLast}
+                                      isCurrent={isCurrent}
+                                      opening={openingId === c.id}
+                                      streaming={streamingIds.has(c.id)}
+                                      onOpen={() => void openConv(w.cwd, c)}
+                                      onNotebook={() =>
+                                        setNotebookFor({ id: c.id, cwd: w.cwd, label })
+                                      }
+                                      onMove={() =>
+                                        setMoveFor({ id: c.id, cwd: w.cwd, label })
+                                      }
+                                    />
                                   </li>
                                 );
                               })}
@@ -1058,6 +1053,17 @@ export default function WorkspaceList() {
         />
       )}
 
+      {moveFor && (
+        <MoveConversationModal
+          open
+          conversationId={moveFor.id}
+          fromCwd={moveFor.cwd}
+          label={moveFor.label}
+          onClose={() => setMoveFor(null)}
+          onMoved={(toCwd) => onMoved(moveFor.id, moveFor.cwd, toCwd)}
+        />
+      )}
+
       <FolderPicker
         open={pickerOpen}
         initialPath={active.cwd && !active.cwd.startsWith('ssh://') ? active.cwd : null}
@@ -1108,6 +1114,118 @@ export default function WorkspaceList() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * One conversation in the sidebar: open it, or reach its notebook and its
+ * folder from the controls that appear on hover.
+ *
+ * Shared by the local and SSH branches, which render an identical row and
+ * differ only in accent colour — so `tone` is the entire difference, and adding
+ * a control here adds it to both instead of to one and then the other.
+ */
+function ConversationItem({
+  label,
+  subtitle,
+  tone,
+  isLast,
+  isCurrent,
+  opening,
+  streaming,
+  onOpen,
+  onNotebook,
+  onMove,
+}: {
+  label: string;
+  subtitle: string;
+  tone: 'blue' | 'emerald';
+  /** The folder's most recent conversation, flagged with a spark. */
+  isLast: boolean;
+  isCurrent: boolean;
+  opening: boolean;
+  /** A turn is in flight in some tab, which is the one time moving is unsafe. */
+  streaming: boolean;
+  onOpen: () => void;
+  onNotebook: () => void;
+  onMove: () => void;
+}) {
+  const isBlue = tone === 'blue';
+  const iconBtn = cn(
+    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 focus-visible:opacity-100 group-hover/conv:opacity-100 touch:opacity-100',
+    isBlue ? 'hover:text-blue-300' : 'hover:text-emerald-300',
+  );
+  return (
+    <div
+      className={cn(
+        'group/conv flex w-full items-center gap-0.5 rounded pr-0.5 transition-colors',
+        isCurrent
+          ? isBlue
+            ? 'bg-blue-500/15 text-blue-100'
+            : 'bg-emerald-500/15 text-emerald-50'
+          : 'hover:bg-secondary',
+      )}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        disabled={opening}
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left',
+          opening && 'opacity-60',
+        )}
+        title={label}
+      >
+        {isLast ? (
+          <Sparkles className="h-3 w-3 shrink-0 text-amber-300" />
+        ) : (
+          <span className="ml-0.5 inline-block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[11.5px] leading-tight">{label}</span>
+          <span className="block truncate text-[10px] text-muted-foreground/70">
+            {subtitle}
+          </span>
+        </span>
+        {opening && (
+          <Loader2
+            className={cn(
+              'h-3 w-3 shrink-0 animate-spin',
+              isBlue ? 'text-blue-400' : 'text-emerald-400',
+            )}
+          />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMove();
+        }}
+        disabled={streaming}
+        title={
+          streaming
+            ? 'Still replying — wait for the turn to finish before moving it'
+            : 'Move to another folder'
+        }
+        aria-label="Move this conversation to another folder"
+        className={cn(iconBtn, streaming && 'cursor-not-allowed opacity-30')}
+      >
+        <FolderInput className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onNotebook();
+        }}
+        title="View / edit notebook"
+        aria-label="View or edit this conversation's notebook"
+        className={iconBtn}
+      >
+        <NotebookPen className="h-3 w-3" />
+      </button>
     </div>
   );
 }
