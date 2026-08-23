@@ -36,6 +36,26 @@ if [ -f .env.local ]; then
   set +a
 fi
 
+# Stop the CLI telling itself to prefer Bash over the file tools.
+#
+# Under `auto` and `bypassPermissions` — and this app runs bypassPermissions —
+# the CLI injects a per-turn system reminder that reads: "Do your work through
+# the Bash tool wherever it can accomplish the job: read files with cat, head,
+# or sed -n, search with grep and find, and make file changes with sed,
+# heredocs, or short scripts, rather than using the dedicated Read, Edit, or
+# Write tools." The model obeys it, so every read becomes `cat` and every edit
+# becomes `sed -i` — no diffs, no read-before-write checks, and a stray shell
+# quote silently corrupts a file instead of failing loudly.
+#
+# It is gated on CLAUDE_CODE_THRIFTY_SONIC, which short-circuits ahead of the
+# model-bundle and cohort checks that would otherwise turn it on. The value is
+# parsed as a boolean, so it must be the literal string "false" — an empty
+# value reads as unset and the reminder comes back.
+#
+# Exported rather than set inline because the Claude CLI is a grandchild of
+# this shell (start.sh -> next -> CLI), and only the environment propagates.
+export CLAUDE_CODE_THRIFTY_SONIC="${CLAUDE_CODE_THRIFTY_SONIC:-false}"
+
 # Escape hatch for contexts that should not touch the tunnel — the Electron
 # wrapper starts its own server on a random port, and enabling serve for that
 # port would point the public hostname at a server that is about to disappear.
