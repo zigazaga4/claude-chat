@@ -11,7 +11,12 @@
  * server-only: it reads credentials out of the process environment.
  */
 
-import { getProvider, type ModelId, type ModelProvider } from '@/lib/models';
+import {
+  getContextWindow,
+  getProvider,
+  type ModelId,
+  type ModelProvider,
+} from '@/lib/models';
 
 /**
  * How a provider expects its credential to be presented.
@@ -190,5 +195,16 @@ export function buildProviderEnv(model: ModelId, base: Env): Env {
   for (const [key, value] of Object.entries(config.tierAliases ?? {})) {
     env[key] = value;
   }
+
+  // The CLI hard-codes a 200,000-token context window for any model id its
+  // own registry doesn't list — and that registry only contains Anthropic
+  // models. Every provider here serves 1M-class models the CLI has never
+  // heard of, so without this the CLI auto-compacts at a fraction of 200k
+  // while the app's meter (which reads OUR registry) honestly reports a
+  // fifth of the window. CLAUDE_CODE_MAX_CONTEXT_TOKENS is the CLI's own
+  // override for exactly this case, honored only for ids that don't start
+  // with "claude-" — which is every model that reaches this branch, and
+  // none that don't.
+  env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(getContextWindow(model));
   return env;
 }
