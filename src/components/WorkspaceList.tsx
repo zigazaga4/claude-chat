@@ -806,17 +806,18 @@ export default function WorkspaceList() {
                                       No conversations yet.
                                     </div>
                                   )}
-                                  <div className="mt-1.5 flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => openNewIn(w.cwd)}
-                                      className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-blue-400/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
-                                    >
-                                      <MessageSquarePlus className="h-3 w-3" />
-                                      New chat
-                                    </button>
-                                    <ThrowawayButton onClick={() => openNewIn(w.cwd, { ephemeral: true })} />
-                                  </div>
+                                  <WorkspaceActions
+                                    onNewChat={() => openNewIn(w.cwd)}
+                                    onThrowaway={() =>
+                                      openNewIn(w.cwd, { ephemeral: true })
+                                    }
+                                    onMcp={() =>
+                                      setMcpFor({
+                                        cwd: w.cwd,
+                                        label: shortLabel(w.cwd),
+                                      })
+                                    }
+                                  />
                                 </div>
                               )}
                             </li>
@@ -1001,40 +1002,18 @@ export default function WorkspaceList() {
                               No conversations yet.
                             </div>
                           )}
-                          <div className="mt-1.5 flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => openNewIn(w.cwd)}
-                              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-blue-400/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
-                            >
-                              <MessageSquarePlus className="h-3 w-3" />
-                              New chat
-                            </button>
-                            <ThrowawayButton onClick={() => openNewIn(w.cwd, { ephemeral: true })} />
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setMcpFor({ cwd: w.cwd, label: shortLabel(w.cwd) })
-                              }
-                              className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-                              title="MCP servers for this folder"
-                              aria-label="Manage MCP servers for this folder"
-                            >
-                              <Plug className="h-3 w-3" />
-                              MCP
-                            </button>
-                            {isSsh && (
-                              <button
-                                type="button"
-                                onClick={() => void onDisconnect(w.cwd)}
-                                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-                                title="Close the SSH connection"
-                              >
-                                <LogOut className="h-3 w-3" />
-                                Disconnect
-                              </button>
-                            )}
-                          </div>
+                          <WorkspaceActions
+                            onNewChat={() => openNewIn(w.cwd)}
+                            onThrowaway={() =>
+                              openNewIn(w.cwd, { ephemeral: true })
+                            }
+                            onMcp={() =>
+                              setMcpFor({ cwd: w.cwd, label: shortLabel(w.cwd) })
+                            }
+                            onDisconnect={
+                              isSsh ? () => void onDisconnect(w.cwd) : undefined
+                            }
+                          />
                         </>
                     </div>
                   )}
@@ -1248,6 +1227,66 @@ function ConversationItem({
  * Compact companion to "New chat": starts a throwaway conversation in the same
  * folder — never listed, deleted the moment the tab moves on.
  */
+/**
+ * The action row under a folder's conversation list.
+ *
+ * Shared by both sidebar branches on purpose. It used to be written out twice
+ * — once for local folders, once inside the SSH host groups — and the copies
+ * drifted: the MCP button was added to the local one only, so a remote folder
+ * had no way to reach its own MCP servers even though attachments are keyed by
+ * folder and work identically on either side.
+ *
+ * `onDisconnect` is optional because the SSH branch already offers Disconnect
+ * once per host group, which is the right granularity there — a connection is
+ * per host, not per folder.
+ */
+function WorkspaceActions({
+  onNewChat,
+  onThrowaway,
+  onMcp,
+  onDisconnect,
+}: {
+  onNewChat: () => void;
+  onThrowaway: () => void;
+  onMcp: () => void;
+  onDisconnect?: () => void;
+}) {
+  return (
+    <div className="mt-1.5 flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={onNewChat}
+        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-blue-400/40 bg-blue-500/10 px-2 py-1 text-[11px] font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
+      >
+        <MessageSquarePlus className="h-3 w-3" />
+        New chat
+      </button>
+      <ThrowawayButton onClick={onThrowaway} />
+      <button
+        type="button"
+        onClick={onMcp}
+        className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="MCP servers for this folder"
+        aria-label="Manage MCP servers for this folder"
+      >
+        <Plug className="h-3 w-3" />
+        MCP
+      </button>
+      {onDisconnect && (
+        <button
+          type="button"
+          onClick={onDisconnect}
+          className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Close the SSH connection"
+        >
+          <LogOut className="h-3 w-3" />
+          Disconnect
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ThrowawayButton({ onClick }: { onClick: () => void }) {
   return (
     <button
