@@ -91,6 +91,18 @@ export function proxyMcpServerFactory(entry: ResolvedMcpEntry) {
     // Raw protocol handlers replace the high-level ones set at construction,
     // turning the server into a pure pass-through for tools.
     const low = server.instance.server;
+    // Declare the tools capability by hand.
+    //
+    // The SDK only registers it inside `setToolRequestHandlers()`, which runs
+    // when a tool is added through the HIGH-LEVEL api — the very thing this
+    // proxy skips so it can forward the upstream tool list verbatim. Without
+    // this line the server advertises no capabilities at all, and a client is
+    // required to refuse the call before it is even sent: the CLI throws
+    // "Server does not support tools (required for tools/list)" and the whole
+    // turn dies on the spot. It looks exactly like the user pressed stop, and
+    // it takes down every conversation in a workspace that has any MCP server
+    // attached — not just the one that is misbehaving.
+    low.registerCapabilities({ tools: {} });
     low.setRequestHandler(ListToolsRequestSchema, async () => {
       const client = await acquireMcpClient(entry);
       const res = await client.listTools();
