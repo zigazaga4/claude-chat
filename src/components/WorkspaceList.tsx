@@ -338,6 +338,28 @@ export default function WorkspaceList() {
     [loadWorkspaces],
   );
 
+  /**
+   * The silent login fired when an SSH row is first opened.
+   *
+   * `tryAuto` throws away every saved knob and lets the server rediscover the
+   * agent and ~/.ssh from scratch. That is the right move only when there is
+   * nothing saved to throw away. When the workspace already names an identity
+   * or opts into the agent, discarding it is actively harmful: the saved key
+   * is the one the user proved works, and re-discovery replaces one correct
+   * offer with a pile of wrong ones — which sshd cuts off at `MaxAuthTries`
+   * before the right key comes up. A key-only host with no stored password
+   * then fails EVERY automatic login, and the failure surfaces much later as
+   * a chat turn that stalls with no reply.
+   */
+  const autoLogin = useCallback(
+    (w: WorkspaceRow) => {
+      const hasSavedAuth =
+        w.hasStoredPassword || !!w.sshIdentityPath || w.sshUseAgent;
+      void tryLogin(w.cwd, hasSavedAuth ? {} : { tryAuto: true });
+    },
+    [tryLogin],
+  );
+
   const expand = (cwd: string) => {
     setExpanded((prev) => {
       if (prev.has(cwd)) return prev;
@@ -373,11 +395,7 @@ export default function WorkspaceList() {
         loginByCwd[w.cwd]?.kind !== 'submitting'
       ) {
         autoLoginAttemptedRef.current.add(w.cwd);
-        if (w.hasStoredPassword) {
-          void tryLogin(w.cwd);
-        } else {
-          void tryLogin(w.cwd, { tryAuto: true });
-        }
+        autoLogin(w);
       }
       return;
     }
@@ -425,11 +443,7 @@ export default function WorkspaceList() {
         loginByCwd[cwd]?.kind !== 'auto'
       ) {
         autoLoginAttemptedRef.current.add(cwd);
-        if (w.hasStoredPassword) {
-          void tryLogin(cwd);
-        } else {
-          void tryLogin(cwd, { tryAuto: true });
-        }
+        autoLogin(w);
       }
     }
     try {

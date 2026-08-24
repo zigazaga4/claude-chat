@@ -685,6 +685,16 @@ function sha256Fingerprint(key: Buffer): string {
 type SshConfigBlock = {
   hostPatterns: string[];
   identityFiles: string[];
+  /**
+   * The block's `HostName`, when it declares one.
+   *
+   * `ssh mac` matches the block by the ALIAS the user typed, but we only ever
+   * have the resolved hostname — an `ssh://` cwd stores what `HostName` points
+   * at, never the alias. Matching on patterns alone therefore misses exactly
+   * the blocks that matter most: the ones a user wrote precisely because the
+   * host needs a specific key.
+   */
+  hostName: string | null;
 };
 
 function parseSshConfig(text: string): SshConfigBlock[] {
@@ -698,7 +708,13 @@ function parseSshConfig(text: string): SshConfigBlock[] {
     if (!keyword) continue;
     if (keyword === 'host') {
       if (current) blocks.push(current);
-      current = { hostPatterns: parts.slice(1), identityFiles: [] };
+      current = {
+        hostPatterns: parts.slice(1),
+        identityFiles: [],
+        hostName: null,
+      };
+    } else if (current && keyword === 'hostname') {
+      current.hostName = parts[1] ?? null;
     } else if (current && keyword === 'identityfile') {
       const value = parts.slice(1).join(' ').replace(/^"(.*)"$/, '$1');
       if (value) current.identityFiles.push(value);
@@ -739,6 +755,16 @@ function looksLikePrivateKey(data: Buffer): boolean {
     head,
   );
 }
+
+/**
+ * Most private keys we will offer during auto-discovery.
+ *
+ * sshd's default `MaxAuthTries` is 6 and every public-key offer burns one, so
+ * the agent (which presents each key it holds separately) plus a full ~/.ssh
+ * sweep can exhaust the budget before the right key comes up. Four leaves room
+ * for the agent to speak first and still reach the config-named key.
+ */
+const MAX_KEY_OFFERS = 4;
 
 const SSH_DIR_SKIP = new Set([
   'config',
@@ -789,7 +815,10 @@ function discoverIdentityCandidates(host: string): {
   try {
     const cfgText = fs.readFileSync(path.join(sshDir, 'config'), 'utf8');
     for (const block of parseSshConfig(cfgText)) {
-      if (!block.hostPatterns.some((p) => matchHostPattern(p, host))) continue;
+      const matches =
+        block.hostPatterns.some((p) => matchHostPattern(p, host)) ||
+        block.hostName === host;
+      if (!matches) continue;
       for (const idFile of block.identityFiles) {
         tryFile(expandHomePath(idFile, home));
       }
@@ -817,6 +846,27 @@ function discoverIdentityCandidates(host: string): {
     }
   } catch {
     /* no ~/.ssh dir — fine */
+  }
+
+  // Never offer more keys than the server will entertain. sshd's default
+  // `MaxAuthTries` is 6, and it counts EVERY offer — so a box with eight keys
+  // in ~/.ssh doesn't just waste attempts, it gets disconnected with "Too many
+  // authentication failures" before reaching the key that would have worked.
+  // Offering fewer, better-ordered keys strictly beats offering all of them:
+  // the ones we drop are the ones the config and the default names both
+  // declined to name, i.e. the least likely to be right.
+  if (paths.length > MAX_KEY_OFFERS) {
+    // Say what was dropped. A silent truncation here reads as "your key isn't
+    // being tried" with no way to tell why.
+    console.log(
+      `[ssh] ${paths.length} candidate keys for ${host}; offering the first ` +
+        `${MAX_KEY_OFFERS} (sshd MaxAuthTries defaults to 6) — skipping ` +
+        paths.slice(MAX_KEY_OFFERS).join(', '),
+    );
+    return {
+      paths: paths.slice(0, MAX_KEY_OFFERS),
+      buffers: buffers.slice(0, MAX_KEY_OFFERS),
+    };
   }
 
   return { paths, buffers };
