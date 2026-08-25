@@ -34,6 +34,9 @@ import { createLocalMcpServer } from '@/server/localTools';
 import {
   createMcpManagerServer,
   proxyMcpServerFactory,
+  mcpManagerPrefix,
+  mcpToolGlob,
+  type McpNaming,
 } from '@/server/mcpConnector';
 import { listServersForWorkspace } from '@/server/mcpRegistry';
 import {
@@ -659,14 +662,17 @@ ${body}`;
 function buildMcpBlock(opts: {
   cwd: string;
   isRemote: boolean;
-  toolPrefix: string;
+  style: McpNaming;
   attached: { name: string }[];
 }): string {
-  const p = opts.toolPrefix;
+  const p = mcpManagerPrefix(opts.style);
   const live =
     opts.attached.length > 0
       ? `Already connected in this folder: ${opts.attached
-          .map((s) => `\`${s.name}\` (its tools are \`${s.name}_*\`)`)
+          .map(
+            (s) =>
+              `\`${s.name}\` (its tools are \`${mcpToolGlob(s.name, opts.style)}\`)`,
+          )
           .join(', ')}. Use those directly — do not re-add them.`
       : 'No MCP servers are connected in this folder yet.';
 
@@ -731,6 +737,90 @@ do that part in the GUI. Say so plainly rather than reconnecting in a loop.
 Tell the user what you connected and what it can do. Prefer \`${p}detach\` over
 \`${p}remove\` when you are only tidying this folder — \`remove\` deletes the
 definition everywhere, including other folders that may rely on it.`;
+}
+
+/**
+ * Tool-selection discipline.
+ *
+ * A shell can imitate almost every other tool, and that is exactly what makes
+ * it the wrong default: it is always available, so it is always the path of
+ * least resistance, and taking it discards everything the purpose-built tool
+ * knows.
+ *
+ * The failure this block exists to stop was observed live. A folder had a
+ * Godot MCP server attached and working, and the model drove the project
+ * through raw CLI and PowerShell anyway — not once, but as a standing habit
+ * for the rest of the conversation. The pattern behind it is the important
+ * part: one tool call errors, the model quietly concludes "that tool is
+ * broken", and every later decision routes around it. The conclusion outlives
+ * the evidence, and the user is never told, so from outside it just looks like
+ * the agent has forgotten it has the tool.
+ *
+ * Hence the rule is not merely "prefer the specific tool" — it is "decide
+ * again every time". A fallback is scoped to the one attempt that needed it,
+ * never to the tool and never to the conversation.
+ */
+function buildToolDisciplineBlock(opts: {
+  style: McpNaming;
+  isRemote: boolean;
+  attached: { name: string }[];
+}): string {
+  const sdk = opts.style === 'sdk';
+  const shell = opts.isRemote
+    ? sdk
+      ? 'mcp__remote__bash'
+      : 'remote_bash'
+    : sdk
+      ? 'Bash'
+      : 'bash';
+  const fileTools = opts.isRemote
+    ? sdk
+      ? '`mcp__remote__read`, `mcp__remote__edit`, `mcp__remote__write`, `mcp__remote__glob`, `mcp__remote__grep`'
+      : '`remote_read`, `remote_edit`, `remote_write`, `remote_glob`, `remote_grep`'
+    : '`Read`, `Edit`, `Write`, `Glob`, `Grep`';
+
+  const connected =
+    opts.attached.length > 0
+      ? `\n**Connected in this folder right now:** ${opts.attached
+          .map((s) => `\`${s.name}\` → \`${mcpToolGlob(s.name, opts.style)}\``)
+          .join(', ')}. When the work concerns one of those, its tools are the
+correct way to do it — not a shell command that approximates them.\n`
+      : '';
+
+  return `# Choosing a tool
+
+Use the most specific tool that fits the job, and widen only when it genuinely
+does not fit:
+
+1. **A tool built for that exact job** — the tools an attached MCP server
+   exposes. If the task is about an application that has a server connected
+   here, that server is how you do it.
+2. **The built-in file and search tools** — ${fileTools}.
+3. **A shell** (\`${shell}\`) — last, for work nothing above covers.
+${connected}
+A shell can imitate almost everything above it, which is precisely why it is
+the wrong default. Reaching for it throws away what the specific tool knows: a
+Godot MCP server understands the project, its scenes, and how to launch, drive
+and screenshot the running game; \`godot --headless\` in a shell knows none of
+that, and you end up rebuilding it badly, one flag at a time — slower, more
+brittle, and invisible to the user who set the server up precisely so this
+would not happen.
+
+**A failure is scoped to the attempt, not to the tool.** If a purpose-built
+tool errors, times out, or returns something unusable, you may fall back to a
+shell **for that one attempt**. That fallback expires the moment the attempt
+ends. The next time the same kind of job comes up, start at the top of this
+list again and try the tool first. Never carry "that tool didn't work" as a
+standing conclusion — most tool failures are transient or specific to the
+arguments used: the application had not started yet, a path was wrong, a flag
+was missing, the editor was still loading. A tool that failed a minute ago is
+very often the right tool now.
+
+**Say so when a tool is genuinely broken.** If a tool fails repeatedly on
+different, reasonable inputs, tell the user plainly: name the tool, quote what
+it returned, and say what you are doing instead. Silently working around a
+broken tool for a whole conversation hides the single fact they most need in
+order to fix it.`;
 }
 
 /**
@@ -1591,16 +1681,25 @@ export async function POST(req: NextRequest) {
             ? await buildSshEnvBlock(cwd)
             : buildLocalEnvBlock(cwd);
           const corePrefix = readSystemPrompt();
+          const attachedServers = listServersForWorkspace(cwd);
           const baseSystem = [
             corePrefix,
             envBlock,
+            // Sits directly after the environment, and ahead of everything
+            // else: it governs HOW every later tool choice is made, so it has
+            // to be read before the blocks that describe individual tools.
+            buildToolDisciplineBlock({
+              style: 'opencode',
+              isRemote,
+              attached: attachedServers,
+            }),
             buildRenderingBlock(),
             // OpenCode namespaces MCP tools as `<server>_<tool>`.
             buildMcpBlock({
               cwd,
               isRemote,
-              toolPrefix: 'mcp_',
-              attached: listServersForWorkspace(cwd),
+              style: 'opencode',
+              attached: attachedServers,
             }),
             // OpenCode does not route tool calls through canUseTool, so the
             // one-level rule is guidance there rather than enforcement.
@@ -1710,7 +1809,11 @@ export async function POST(req: NextRequest) {
         for (const entry of listServersForWorkspace(cwd)) {
           mcpServers[entry.name] = proxyMcpServerFactory(entry)();
         }
-        mcpServers.mcp = createMcpManagerServer({ workspaceCwd: cwd, isRemote });
+        mcpServers.mcp = createMcpManagerServer({
+          workspaceCwd: cwd,
+          isRemote,
+          style: 'sdk',
+        });
         const remoteToolsToBlock = [
           'Bash',
           'BashOutput',
@@ -1734,16 +1837,25 @@ export async function POST(req: NextRequest) {
         // notes the model writes mid-conversation surface on the next message.
         const notebookNotes = sessionId ? readNotebook(sessionId) : '';
         const notebookBlock = buildNotebookBlock(notebookNotes);
+        const attachedServers = listServersForWorkspace(cwd);
         const baseSystem = [
           corePrefix,
           envBlock,
+          // Sits directly after the environment, and ahead of everything else:
+          // it governs HOW every later tool choice is made, so it has to be
+          // read before the blocks that describe individual tools.
+          buildToolDisciplineBlock({
+            style: 'sdk',
+            isRemote,
+            attached: attachedServers,
+          }),
           buildRenderingBlock(),
           // The CLI namespaces MCP tools as `mcp__<server>__<tool>`.
           buildMcpBlock({
             cwd,
             isRemote,
-            toolPrefix: 'mcp__mcp__',
-            attached: listServersForWorkspace(cwd),
+            style: 'sdk',
+            attached: attachedServers,
           }),
           buildAgentsBlock(true, describeLiveAgents(sessionId ?? null, Date.now())),
         ]

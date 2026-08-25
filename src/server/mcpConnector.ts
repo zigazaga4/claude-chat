@@ -75,10 +75,53 @@ function err(text: string): ToolResult {
 }
 
 /** Conversation context the management tools act on. */
+/**
+ * How each engine namespaces MCP tools.
+ *
+ * The two disagree, and getting it wrong is not cosmetic: telling the model a
+ * tool is called `godot_run_project` when the engine actually exposes
+ * `mcp__godot__run_project` sends it looking for something that does not
+ * exist, and the natural next move after "that tool isn't there" is to shell
+ * out instead. Observed live — a folder with a working Godot server driven
+ * entirely through raw CLI.
+ *
+ * This is the ONE definition of the rule. Everything that names an MCP tool in
+ * a prompt or a tool result derives it from here, so the two spellings cannot
+ * drift apart again.
+ *
+ *   Agent SDK   mcp__<server>__<tool>
+ *   OpenCode    <server>_<tool>
+ */
+export type McpNaming = 'sdk' | 'opencode';
+
+/** Tool glob for a third-party MCP server, e.g. `mcp__godot__*`. */
+export function mcpToolGlob(server: string, style: McpNaming): string {
+  return style === 'sdk' ? `mcp__${server}__*` : `${server}_*`;
+}
+
+/** A specific tool's full name, e.g. `mcp__godot__run_project`. */
+export function mcpToolName(
+  server: string,
+  toolName: string,
+  style: McpNaming,
+): string {
+  return style === 'sdk' ? `mcp__${server}__${toolName}` : `${server}_${toolName}`;
+}
+
+/** Prefix for the built-in MCP *manager* tools (list/connect/attach/…). */
+export function mcpManagerPrefix(style: McpNaming): string {
+  return style === 'sdk' ? 'mcp__mcp__' : 'mcp_';
+}
+
 export type McpConnectorContext = {
   /** Workspace cwd — `ssh://…` for remote conversations, a local path otherwise. */
   workspaceCwd: string;
   isRemote: boolean;
+  /**
+   * Which engine is serving this turn. Decides how this server's own tool
+   * descriptions and results spell the tools it connects — see `McpNaming`.
+   */
+  style: McpNaming;
 };
 
 /**
@@ -195,12 +238,12 @@ export function createMcpManagerServer(ctx: McpConnectorContext) {
       ),
       tool(
         'connect',
-        "Add an MCP server and make it live in THIS folder, connecting immediately. This is how you wire a server you just set up (e.g. installed over SSH) into your own toolset: after a successful connect, its tools appear as `<name>_<tool>` from your NEXT message. If the server needs installing or starting first, do that with the shell tools (on an SSH host: `mcp__remote__bash`) before calling this. The definition is saved globally, so other folders can `attach` it later.",
+        `Add an MCP server and make it live in THIS folder, connecting immediately. This is how you wire a server you just set up (e.g. installed over SSH) into your own toolset: after a successful connect, its tools appear as \`${mcpToolGlob('<name>', ctx.style)}\` from your NEXT message. If the server needs installing or starting first, do that with the shell tools (on an SSH host: \`mcp__remote__bash\`) before calling this. The definition is saved globally, so other folders can \`attach\` it later.`,
         {
           name: z
             .string()
             .describe(
-              'Short identifier for the server. Becomes the tool namespace, e.g. name "blender" → tools like blender_get_scene_info. Letters/digits/dash/underscore.',
+              `Short identifier for the server. Becomes the tool namespace, e.g. name "blender" → tools like ${mcpToolName('blender', 'get_scene_info', ctx.style)}. Letters/digits/dash/underscore.`,
             ),
           transport: TRANSPORT_FIELD,
           command: z
@@ -270,7 +313,7 @@ export function createMcpManagerServer(ctx: McpConnectorContext) {
             return ok(
               `Connected "${entry.name}" in ${folder} — ${tools.length} tool(s): ${summarizeTools(tools)}.\n` +
                 `Running on: ${whereLine(resolved)}.\n` +
-                `Its tools are available from your NEXT message (as ${entry.name}_<tool>).`,
+                `Its tools are available from your NEXT message (as ${mcpToolGlob(entry.name, ctx.style)}).`,
             );
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);

@@ -166,8 +166,11 @@ export async function runOpencodeStream(
     mcpFactories[entry.name] = () => proxyMcpServerFactory(entry)().instance;
   }
   mcpFactories.mcp = () =>
-    createMcpManagerServer({ workspaceCwd: opts.cwd, isRemote: opts.isRemote })
-      .instance;
+    createMcpManagerServer({
+      workspaceCwd: opts.cwd,
+      isRemote: opts.isRemote,
+      style: 'opencode',
+    }).instance;
 
   const backend = await startOpencodeBackend({
     model: opts.model,
