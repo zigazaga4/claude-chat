@@ -46,6 +46,13 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-pink-500/40 bg-pink-500/10 text-pink-200 hover:bg-pink-500/15',
     dot: 'bg-pink-400',
   },
+  // Third route to that same model: Moonshot's own pay-as-you-go API. Stays in
+  // the rose/pink family with its two siblings, one step further along it, so
+  // the picker groups all three Kimis by sight while still telling them apart.
+  'kimi-k3': {
+    btn: 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200 hover:bg-fuchsia-500/15',
+    dot: 'bg-fuchsia-400',
+  },
   'glm-5.3': {
     btn: 'border-lime-500/40 bg-lime-500/10 text-lime-200 hover:bg-lime-500/15',
     dot: 'bg-lime-400',

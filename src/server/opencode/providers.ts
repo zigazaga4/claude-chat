@@ -17,6 +17,7 @@
  *   deepseek         https://api.deepseek.com            deepseek-v4-pro / -flash
  *   openrouter       https://openrouter.ai/api/v1        moonshotai/kimi-k3
  *   zai-coding-plan  https://api.z.ai/api/coding/paas/v4 glm-5.2
+ *   moonshotai       https://api.moonshot.ai/v1          kimi-k3 (PAYG; CN mirror via MOONSHOT_BASE_URL)
  *   alibaba-token-plan  https://token-plan.ap-southeast-1.maas.aliyuncs.com  qwen3.8-max (intl; CN mirror via QWEN_BASE_URL — NOT yet live-verified)
  *
  * The Z.AI mapping is the one that matters most. `zai-coding-plan` bills
@@ -81,6 +82,17 @@ const SPECS: Record<OpencodeProvider, ProviderSpec> = {
     registryId: 'kimi-for-coding',
     credentialVar: 'KIMI_API_KEY',
     baseUrlVar: 'KIMI_BASE_URL',
+  },
+  moonshot: {
+    // The registry's `moonshotai` entry — Moonshot's own pay-as-you-go API at
+    // api.moonshot.ai/v1, the separate developer account `kimi-for-coding`
+    // above is NOT. models.dev already names its credential MOONSHOT_API_KEY,
+    // so the two agree by construction. `moonshotai-cn` is the mainland mirror;
+    // reach it with MOONSHOT_BASE_URL rather than a second spec, since the
+    // catalog is identical.
+    registryId: 'moonshotai',
+    credentialVar: 'MOONSHOT_API_KEY',
+    baseUrlVar: 'MOONSHOT_BASE_URL',
   },
   qwen: {
     // `alibaba-token-plan` is the registry's Token Plan endpoint (intl,

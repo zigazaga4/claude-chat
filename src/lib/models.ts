@@ -29,6 +29,7 @@ export type ModelId =
   | 'deepseek-v4-flash'
   | 'moonshotai/kimi-k3'
   | 'kimi-k3-code'
+  | 'kimi-k3'
   | 'glm-5.3'
   | 'qwen3.8-max';
 
@@ -45,6 +46,7 @@ export type ModelProvider =
   | 'openrouter'
   | 'zai'
   | 'kimi'
+  | 'moonshot'
   | 'qwen';
 
 /** Full SDK effort ladder. All models expose all of these in the picker. */
@@ -178,6 +180,32 @@ export const MODELS: ModelInfo[] = [
     thinkingType: 'adaptive',
     defaultEffort: 'high',
     provider: 'kimi',
+    contextWindow: 1_048_576,
+  },
+  {
+    // The same Moonshot model again, on the THIRD of the three routes to it:
+    // Moonshot's own pay-as-you-go developer API, billed per token against a
+    // prepaid balance. Distinct from both siblings above —
+    //
+    //   moonshotai/kimi-k3  marketplace (OpenRouter), per-token, host roulette
+    //   kimi-k3-code        Kimi Code subscription, flat rate, `k3` on the wire
+    //   kimi-k3 (this one)  Moonshot direct, per-token, first-party
+    //
+    // Worth keeping all three: the subscription has usage windows that run
+    // out, OpenRouter's quality varies with whichever host it picks, and this
+    // route is the one that always works at a predictable price. `kimi-k3` is
+    // the id Moonshot's own catalog publishes, so it goes on the wire verbatim
+    // — no `wireId` needed.
+    //
+    // Verified live against the endpoint: 1,048,576 context, 131k max output,
+    // tool calling, prompt caching, and thinking that is always on
+    // (`supports_thinking_type: "only"` — it cannot be turned off).
+    id: 'kimi-k3',
+    label: 'Kimi K3 (Moonshot API)',
+    shortLabel: 'Kimi K3 API',
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+    provider: 'moonshot',
     contextWindow: 1_048_576,
   },
   {

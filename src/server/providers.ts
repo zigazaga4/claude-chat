@@ -96,6 +96,30 @@ const PROVIDERS: Record<
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'k3',
     },
   },
+  moonshot: {
+    // Moonshot's pay-as-you-go developer API — the same company and the same
+    // weights as `kimi` above, but a SEPARATE billing account whose keys are
+    // not interchangeable in either direction: a Kimi Code key 401s here and
+    // this key 401s on the coding endpoint. Balance is prepaid, so a turn can
+    // fail on funds rather than on quota.
+    //
+    // Like Z.AI's and Qwen's, the base stops BEFORE /v1 — the CLI appends
+    // /v1/messages itself. `MOONSHOT_BASE_URL` reaches the CN mirror
+    // (api.moonshot.cn), which serves the same catalog to mainland accounts.
+    baseUrl: 'https://api.moonshot.ai/anthropic',
+    baseUrlVar: 'MOONSHOT_BASE_URL',
+    credentialVar: 'MOONSHOT_API_KEY',
+    authStyle: 'bearer',
+    tierAliases: {
+      // kimi-k2.5 is the cheapest model actually live on this account
+      // ($0.60/$3.00 per MTok against k3's $3/$15) and still calls tools, so
+      // conversation titles cost a twentieth of what they would on k3. The
+      // `kimi-k2-*-preview` ids models.dev lists slightly cheaper are NOT in
+      // this endpoint's live /v1/models, so they are not safe defaults.
+      ANTHROPIC_SMALL_FAST_MODEL: 'kimi-k2.5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'kimi-k2.5',
+    },
+  },
   zai: {
     // First-party GLM, billed against the user's coding-plan subscription
     // instead of per-token through a marketplace.
