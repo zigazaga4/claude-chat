@@ -234,6 +234,24 @@ const AGENT_TASK_GRACE_MS = 30 * 60_000;
 const BACKGROUND_SHELL_GRACE_MS = 90_000;
 
 /**
+ * Opening words of the tool_result the CLI substitutes when it reaches a tool
+ * whose abort signal is already set.
+ *
+ * Worth naming because the wording is badly misleading: it is phrased as the
+ * USER refusing ("The user doesn't want to take this action right now. STOP
+ * what you are doing…") but the CLI emits it for any cancellation — its own
+ * telemetry logs it as `tengu_tool_use_cancelled`, and the same constant covers
+ * turn teardown, interrupt and background handoff. Nothing here ever denies a
+ * tool: `canUseTool` allows everything except `AskUserQuestion`. So seeing this
+ * means the turn was torn down underneath the model, and the model's "I've
+ * stopped, nothing was changed" is it believing the user hit stop.
+ *
+ * Matched as a prefix, not an equality: the CLI appends context in some paths.
+ */
+const CLI_TOOL_CANCELLED_PREFIX =
+  "The user doesn't want to take this action right now.";
+
+/**
  * Task types the SDK registers for agent-shaped work, which does route tool
  * calls back through `canUseTool` on this stream and therefore does need it
  * held open. Everything else (`local_bash`, monitors) does not.
@@ -1194,15 +1212,6 @@ export async function POST(req: NextRequest) {
        */
       let refusalSeen = false;
       /**
-       * True when the assistant message that closed the current turn was
-       * FABRICATED by the CLI rather than produced by the model (model
-       * `<synthetic>` — e.g. "No response requested." on resume). Such a turn
-       * means "nothing happened yet", not "the turn is done", so its `result`
-       * must not tear the input stream down at the normal 150 ms grace.
-       * Reset in beginNextTurn.
-       */
-      let syntheticTurn = false;
-      /**
        * True once the CLI has auto-compacted during the current turn.
        *
        * Compaction means the turn has not started answering yet — it has only
@@ -1227,6 +1236,22 @@ export async function POST(req: NextRequest) {
        * `result.modelUsage` aggregates across the whole loop and double-
        * counts the shared prefix every iteration, so we ignore it here and
        * trust the per-message usage instead.
+       *
+       * PER-TURN, and reset in beginNextTurn alongside `compactedThisTurn` —
+       * the `result` handler reads it as "has a real model call answered THIS
+       * turn?". It used to live for the whole stream, which silently disarmed
+       * that guard after the first real answer: every later turn whose `result`
+       * arrived before the turn had actually answered was torn down at the
+       * 150 ms grace while the CLI was still rebuilding. The turn kept going
+       * without its input stream, so the CLI aborted it, and the first tool call
+       * came back cancelled — "The user doesn't want to take this action right
+       * now. STOP what you are doing…", which is the CLI's cancellation text,
+       * not a rejection. The model reads it as the user hitting stop and says
+       * so, while the user pressed nothing.
+       *
+       * The compaction path clears this for the same reason (see the
+       * `compact_boundary` handler); that clear stays, since a compaction lands
+       * mid-turn, long after beginNextTurn has run.
        */
       let lastAssistantApiUsageTotal: number | null = null;
       /**
@@ -1601,8 +1626,12 @@ export async function POST(req: NextRequest) {
         openBlocks.clear();
         lastPersistAt = 0;
         refusalSeen = false;
-        syntheticTurn = false;
         compactedThisTurn = false;
+        // Per-turn, exactly like `compactedThisTurn` above — the `result`
+        // handler asks "has a real model call answered THIS turn?", and leaving
+        // last turn's reading in place answers "yes" for a turn that has not
+        // started yet.
+        lastAssistantApiUsageTotal = null;
         currentTurn = next;
         turnLive = false;
         if (activeConversationId) {
@@ -2500,13 +2529,13 @@ export async function POST(req: NextRequest) {
             // A `<synthetic>` model means the CLI fabricated this message
             // instead of calling the API (classically "No response requested."
             // right after a resume). It carries no streaming events at all, so
-            // everything below — and the longer grace in the `result` handler —
-            // exists because this message is the ONLY place its content
-            // appears.
-            // Assignment, not |=: this tracks the MOST RECENT assistant
-            // message, so a synthetic placeholder followed by a real answer
-            // correctly leaves the turn marked non-synthetic.
-            syntheticTurn = asString(inner?.model) === '<synthetic>';
+            // everything below exists because this message is the ONLY place
+            // its content appears.
+            //
+            // Nothing needs to FLAG it any more: a fabricated message reports
+            // no usage, so the `result` handler's "did this turn burn any
+            // tokens?" test already covers it, along with every other way a
+            // turn can end without having answered.
             const content = inner?.content;
             if (Array.isArray(content)) {
               for (const part of content) {
@@ -2635,6 +2664,31 @@ export async function POST(req: NextRequest) {
                 if (!toolUseId) continue;
                 const text = flattenToolResultContent(r.content);
                 const isError = Boolean(r.is_error);
+                // The CLI hands back this exact text when a tool is reached
+                // with its abort signal already set — telemetry calls it
+                // `tengu_tool_use_cancelled`. It is a CANCELLATION, not a user
+                // rejection, but it reads like one to the model, which then
+                // announces it has stopped while the user pressed nothing.
+                //
+                // Reaching here with no Stop from the user means WE tore the
+                // turn down — almost always by closing the input stream under a
+                // turn that was still working. Say so in the log, because the
+                // conversation itself will show only a polite "I've stopped".
+                if (isError && text.startsWith(CLI_TOOL_CANCELLED_PREFIX)) {
+                  console.warn(
+                    '[chat] tool cancelled by teardown, not by the user',
+                    JSON.stringify({
+                      tool:
+                        (blocks.find(
+                          (b) => b.type === 'tool_use' && b.toolUseId === toolUseId,
+                        ) as ToolUseBlock | undefined)?.name ?? 'unknown',
+                      userAborted: req.signal.aborted,
+                      inputClosed,
+                      session: (activeConversationId ?? sessionId ?? '?').slice(0, 8),
+                      cwd,
+                    }),
+                  );
+                }
                 const idx = blocks.findIndex(
                   (b) => b.type === 'tool_use' && b.toolUseId === toolUseId,
                 );
@@ -2693,17 +2747,27 @@ export async function POST(req: NextRequest) {
             // appears in chat) regardless of how the CLI batches turns.
             // Read before beginNextTurn — promoting a turn resets the flag.
             // `lastAssistantApiUsageTotal == null` means no real model call has
-            // happened on this stream yet, which is what separates "the CLI
-            // hasn't started working" from "a finished turn that merely ended
-            // on a synthetic message".
-            // A compaction counts the same way a synthetic message does: it
-            // says "still getting ready", not "here is your answer". It is
-            // checked INSTEAD of `syntheticTurn` (not AND-ed) because the CLI
-            // does not always follow a compaction with a synthetic placeholder
-            // — sometimes `result` simply arrives with nothing in the turn.
-            const closedTurnWasSynthetic =
-              (syntheticTurn || compactedThisTurn) &&
-              lastAssistantApiUsageTotal == null;
+            // answered THIS turn, which is what separates "the CLI hasn't
+            // started working" from "a finished turn that merely ended on a
+            // synthetic message". It is reset per turn in beginNextTurn — as a
+            // stream-lifetime value it reported the first turn's answer forever
+            // and disarmed this guard for every turn after it.
+            // The test is the USAGE ALONE, deliberately. This used to enumerate
+            // the known reasons a `result` can arrive without meaning
+            // "answered" — a fabricated `<synthetic>` placeholder, an
+            // auto-compaction — each added only after it had silently killed a
+            // turn in production. A transcript of a turn killed this way had
+            // NEITHER: no placeholder, no compaction, just a `result` that
+            // landed while the CLI was still rebuilding, followed 26 s later by
+            // real output whose first tool call came back cancelled.
+            //
+            // Enumerating the reasons was the mistake. "This turn burned no
+            // model tokens" is the thing actually being asserted, it covers
+            // every reason including ones not yet met, and it cannot be wrong
+            // about a turn that really did answer — answering costs tokens.
+            // `compactedThisTurn` survives only for the messaging below, which
+            // does still need to know WHY the turn came back empty.
+            const closedTurnWasSynthetic = lastAssistantApiUsageTotal == null;
             if (pendingTurnMetas.length > 0 && !isCompactOp) {
               beginNextTurn();
             }
