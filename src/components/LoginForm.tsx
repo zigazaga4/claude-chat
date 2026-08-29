@@ -102,7 +102,8 @@ export default function LoginForm({ configured }: { configured: boolean }) {
         )}
 
         <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground/70">
-          Reachable only from your tailnet. Sessions last 30 days per device.
+          The password is the only key — keep it private. Sessions last 30 days
+          per device.
         </p>
       </div>
     </div>
