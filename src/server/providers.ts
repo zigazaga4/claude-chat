@@ -64,9 +64,9 @@ const PROVIDERS: Record<
     credentialVar: 'DEEPSEEK_API_KEY',
     authStyle: 'api-key',
     tierAliases: {
-      ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash',
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-flash',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-flash',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-flash',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
     },
   },

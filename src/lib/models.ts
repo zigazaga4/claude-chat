@@ -5,11 +5,12 @@
  * can import it without dragging in any React or browser-only code.
  *
  * Naming convention matches Anthropic's documented model IDs. Only CURRENT
- * Claude tiers are listed — Fable 5, Opus 5, Sonnet 5. Every superseded id
- * (Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5) was dropped from the picker and lives
- * on only in `RETIRED_MODEL_IDS`, which re-points persisted conversations at
- * its successor. `claude-sonnet-5` is the floor; the Mythos-class flagship
- * `claude-fable-5` (released 2026-06-09) uses a single version number. The
+ * Claude tiers are listed — Fable 5.1, Opus 5, Sonnet 5. Every superseded id
+ * (Fable 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5) was dropped from the picker
+ * and lives on only in `RETIRED_MODEL_IDS`, which re-points persisted
+ * conversations at its successor. `claude-sonnet-5` is the floor; the
+ * Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
+ * point release, the same way the Opus and Sonnet tiers always have. The
  * `model` option is a free-form string the CLI resolves, so no SDK version
  * bump is required to use a new ID.
  *
@@ -22,11 +23,11 @@
  */
 
 export type ModelId =
-  | 'claude-fable-5'
+  | 'claude-fable-5-1'
   | 'claude-opus-5'
   | 'claude-sonnet-5'
   | 'deepseek-v4-pro'
-  | 'deepseek-v4-flash'
+  | 'deepseek-flash'
   | 'moonshotai/kimi-k3'
   | 'kimi-k3-code'
   | 'kimi-k3'
@@ -99,10 +100,13 @@ export const EFFORT_LABELS: Record<EffortLevel, string> = {
 export const MODELS: ModelInfo[] = [
   {
     // Anthropic's most capable widely released model (Mythos-class). Adaptive
-    // thinking is always on and is the only thinking mode it supports.
-    id: 'claude-fable-5',
-    label: 'Claude Fable 5',
-    shortLabel: 'Fable 5',
+    // thinking is always on and is the only thinking mode it supports —
+    // confirmed against the Models API, which reports the `enabled` thinking
+    // type as unsupported and only `adaptive` as supported. 1M input, 128k
+    // output, full effort ladder low → max.
+    id: 'claude-fable-5-1',
+    label: 'Claude Fable 5.1',
+    shortLabel: 'Fable 5.1',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -131,6 +135,11 @@ export const MODELS: ModelInfo[] = [
     // request, so the effort ladder below is inert for this model — it stays
     // in the type only because the picker offers one ladder for every model.
     // 1M context, 384k max output.
+    //
+    // NOTE (from DeepSeek's pricing docs, read 2026-09-10): from 2026-09-14
+    // every deepseek-v4-pro request is routed to V4.1-Flash and billed at the
+    // Flash price. After that date this entry is a second, pricier-labelled
+    // door onto the same model as the entry below, and should be retired.
     id: 'deepseek-v4-pro',
     label: 'DeepSeek V4 Pro',
     shortLabel: 'DS V4 Pro',
@@ -139,11 +148,21 @@ export const MODELS: ModelInfo[] = [
     provider: 'deepseek',
   },
   {
-    // The efficiency tier — same 1M context, roughly a third of Pro's price.
-    // Also the model DeepSeek falls back to for any unrecognised model name.
-    id: 'deepseek-v4-flash',
-    label: 'DeepSeek V4 Flash',
-    shortLabel: 'DS V4 Flash',
+    // The efficiency tier, currently serving DeepSeek-V4.1-Flash: 1M context,
+    // 384k max output, and a quarter to a third of Pro's price depending on
+    // token type (output 3.3x cheaper, uncached input 4.4x, cache hits 7.3x).
+    // Thinking is on by default here and CAN be switched off per request,
+    // unlike Pro.
+    //
+    // `deepseek-flash` is a FLOATING alias, and it is the only flash id the
+    // live /models endpoint advertises — the version lives in the label, not
+    // the id, so the next point release needs a label change and nothing more.
+    // The older `deepseek-v4-flash` is a legacy name DeepSeek still accepts and
+    // routes here; it is retired below rather than kept, since an id the
+    // provider no longer lists is one deprecation notice away from breaking.
+    id: 'deepseek-flash',
+    label: 'DeepSeek V4.1 Flash',
+    shortLabel: 'DS V4.1 Flash',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
     provider: 'deepseek',
@@ -293,6 +312,15 @@ const RETIRED_MODEL_IDS: Record<string, ModelId> = {
   // the same price per token as 4.8 was.
   'claude-opus-4-8': 'claude-opus-5',
   'claude-opus-4-7': 'claude-opus-5',
+  // Fable 5 → 5.1 is a point release within the same flagship tier: same 1M
+  // context, same 128k output, same adaptive-only thinking, same price. So a
+  // conversation pinned to it moves straight across rather than landing on a
+  // different tier the way the entries above have to.
+  'claude-fable-5': 'claude-fable-5-1',
+  // DeepSeek renamed its flash tier to a floating `deepseek-flash` alias when
+  // V4.1-Flash shipped. Same tier, same 1M context, same price — so this is a
+  // straight-across move like the Fable entry above, not a tier change.
+  'deepseek-v4-flash': 'deepseek-flash',
 };
 
 /**

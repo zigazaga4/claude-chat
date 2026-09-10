@@ -16,7 +16,7 @@ import {
 } from '@/lib/backends';
 
 const STYLES: Record<ModelId, { btn: string; dot: string }> = {
-  'claude-fable-5': {
+  'claude-fable-5-1': {
     btn: 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15',
     dot: 'bg-amber-400',
   },
@@ -32,7 +32,7 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/15',
     dot: 'bg-blue-400',
   },
-  'deepseek-v4-flash': {
+  'deepseek-flash': {
     btn: 'border-teal-500/40 bg-teal-500/10 text-teal-200 hover:bg-teal-500/15',
     dot: 'bg-teal-400',
   },

@@ -14,7 +14,7 @@
  * registry cannot know: which credential to use, and which single provider is
  * allowed to serve a given turn. Verified against a live server (2026-08-01):
  *
- *   deepseek         https://api.deepseek.com            deepseek-v4-pro / -flash
+ *   deepseek         https://api.deepseek.com            deepseek-v4-pro / deepseek-flash
  *   openrouter       https://openrouter.ai/api/v1        moonshotai/kimi-k3
  *   zai-coding-plan  https://api.z.ai/api/coding/paas/v4 glm-5.2
  *   moonshotai       https://api.moonshot.ai/v1          kimi-k3 (PAYG; CN mirror via MOONSHOT_BASE_URL)
@@ -261,7 +261,7 @@ export function promptModel(
  */
 export function smallModelFor(model: ModelId, env: NodeJS.ProcessEnv): string {
   const cheaper: Partial<Record<OpencodeProvider, ModelId>> = {
-    deepseek: 'deepseek-v4-flash',
+    deepseek: 'deepseek-flash',
   };
   const provider = getProvider(model);
   if (!isOpencodeProvider(provider)) return qualifiedModel(model, env);

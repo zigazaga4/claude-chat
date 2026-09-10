@@ -70,7 +70,7 @@ export type ErrorBlock = {
 export type RefusalBlock = {
   type: 'refusal';
   id: string;
-  /** Model that declined (e.g. "claude-fable-5"). */
+  /** Model that declined (e.g. "claude-fable-5-1"). */
   model?: string;
   category?: string | null;
   explanation?: string | null;
