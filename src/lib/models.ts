@@ -28,6 +28,7 @@ export type ModelId =
   | 'claude-sonnet-5'
   | 'deepseek-v4-pro'
   | 'deepseek-flash'
+  | 'deepseek/deepseek-v4.1-flash'
   | 'moonshotai/kimi-k3'
   | 'kimi-k3-code'
   | 'kimi-k3'
@@ -166,6 +167,30 @@ export const MODELS: ModelInfo[] = [
     thinkingType: 'adaptive',
     defaultEffort: 'high',
     provider: 'deepseek',
+  },
+  {
+    // The same V4.1-Flash as above, billed through OpenRouter rather than a
+    // DeepSeek account. Identical model at an identical price, so the only
+    // thing this second door changes is which balance it draws down.
+    //
+    // Deliberately NO `:nitro`, unlike the Kimi entry below — here that suffix
+    // would be a downgrade. DeepSeek serves this model first-party at
+    // $0.15/$0.60 per Mtok, unquantised, with the full 1M window and 99.99%
+    // uptime; every third-party host on OpenRouter is fp8 or fp4 at
+    // $0.30/$1.20, double the output price for degraded weights. Measured
+    // 2026-09-11: the bare slug, `:floor` and `:nitro` all land on DeepSeek
+    // today, so the suffix only decides where a FALLBACK goes when DeepSeek is
+    // down. The bare slug is kept because its default routing weighs uptime,
+    // where `:floor` would chase the next-cheapest host — a 262k-context
+    // endpoint at 76% uptime, which would silently truncate a long
+    // conversation this entry advertises as 1M.
+    id: 'deepseek/deepseek-v4.1-flash',
+    label: 'DeepSeek V4.1 Flash (OpenRouter)',
+    shortLabel: 'DS Flash (OR)',
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+    provider: 'openrouter',
+    contextWindow: 1_048_576,
   },
   {
     // Moonshot's frontier open-weight model (2.8T MoE), via OpenRouter. The

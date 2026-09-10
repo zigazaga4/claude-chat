@@ -36,6 +36,12 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-teal-500/40 bg-teal-500/10 text-teal-200 hover:bg-teal-500/15',
     dot: 'bg-teal-400',
   },
+  // Same model as `deepseek-flash`, routed through OpenRouter — kept adjacent
+  // to that entry's teal so the two DeepSeek doors read as siblings.
+  'deepseek/deepseek-v4.1-flash': {
+    btn: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/15',
+    dot: 'bg-cyan-400',
+  },
   'moonshotai/kimi-k3': {
     btn: 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15',
     dot: 'bg-rose-400',
