@@ -5,7 +5,6 @@ import {
   type DragEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -18,13 +17,14 @@ import {
   RefreshCw,
   Upload,
 } from 'lucide-react';
-import { Highlight, themes } from 'prism-react-renderer';
+import { CODE_THEME, Highlight } from '@/lib/prism';
 import { cn } from '@/lib/cn';
 import {
   FOLDER_COLOR,
   FolderIcon,
   FolderOpenIcon,
   getFileMeta,
+  languageForPath,
 } from '@/lib/fileIcons';
 import { useInstances } from '@/state/instances';
 
@@ -767,31 +767,26 @@ function FileNode({
 }
 
 function CodeViewer({ path, content }: { path: string; content: string }) {
-  const meta = useMemo(() => getFileMeta(basename(path)), [path]);
-  const language = meta.lang ?? 'text';
+  const language = languageForPath(path);
   return (
-    <Highlight code={content} language={language} theme={themes.vsDark}>
+    <Highlight code={content} language={language} theme={CODE_THEME}>
       {({ className, style, tokens, getLineProps, getTokenProps }) => (
         <pre
           className={cn(className, 'm-0 min-h-full overflow-visible p-3 font-mono text-[12px] leading-[1.55]')}
           style={style}
         >
-          {tokens.map((line, i) => {
-            const { key: _lineKey, ...lineProps } = getLineProps({ line });
-            return (
-              <div key={i} {...lineProps} className="table-row">
-                <span className="table-cell select-none pr-3 text-right text-[10.5px] text-muted-foreground/60">
-                  {i + 1}
-                </span>
-                <span className="table-cell whitespace-pre-wrap break-all">
-                  {line.map((token, j) => {
-                    const { key: _tokenKey, ...tokenProps } = getTokenProps({ token });
-                    return <span key={j} {...tokenProps} />;
-                  })}
-                </span>
-              </div>
-            );
-          })}
+          {tokens.map((line, i) => (
+            <div key={i} {...getLineProps({ line })} className="table-row">
+              <span className="table-cell select-none pr-3 text-right text-[10.5px] text-muted-foreground/60">
+                {i + 1}
+              </span>
+              <span className="table-cell whitespace-pre-wrap break-all">
+                {line.map((token, j) => (
+                  <span key={j} {...getTokenProps({ token })} />
+                ))}
+              </span>
+            </div>
+          ))}
         </pre>
       )}
     </Highlight>

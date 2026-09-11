@@ -62,7 +62,7 @@ export function EditToolView({ block }: { block: ToolUseBlock }) {
           </div>
           <div>
             <FieldLabel>Diff</FieldLabel>
-            <DiffView prior={prior} next={next} context={3} />
+            <DiffView prior={prior} next={next} context={3} path={filePath} />
           </div>
           {block.result && (
             <div>

@@ -9,9 +9,17 @@
  *
  *   node scripts/shoot-mobile.mjs <baseUrl> <password> <out.png> [clicks]
  *
- * `clicks` is one CSS selector, or several joined by `>>` to click in order —
- * enough to reach anything behind a disclosure or a modal, which a single
- * click cannot.
+ * `clicks` is one step, or several joined by `>>` to run in order — enough to
+ * reach anything behind a disclosure or a modal, which a single click cannot.
+ * A step is one of:
+ *
+ *   <css selector>   click the first match
+ *   text=<needle>    click the first button/link whose visible text contains
+ *                    the needle — folders, conversations and tool cards have
+ *                    no stable selectors, but they do have names
+ *   js:<expression>  evaluate it and log the result; for anything else, such
+ *                    as scrolling a card into view WITHOUT clicking it, which
+ *                    would toggle an auto-opened card shut
  */
 
 const [, , base, password, out, clickSelector] = process.argv;
@@ -106,12 +114,21 @@ console.log('  login status:', login.result.value);
 await send('Page.navigate', { url: `${base}/` });
 await wait(3500);
 
-for (const sel of (clickSelector ?? '').split('>>').map((s) => s.trim()).filter(Boolean)) {
-  const clicked = await send('Runtime.evaluate', {
+/** The browser-side expression for one step (see the header for the forms). */
+function stepExpression(step) {
+  if (step.startsWith('js:')) return step.slice(3);
+  const finder = step.startsWith('text=')
+    ? `[...document.querySelectorAll('button, a, [role=button]')].find((e) => e.textContent.includes(${JSON.stringify(step.slice(5))}))`
+    : `document.querySelector(${JSON.stringify(step)})`;
+  return `(() => { const el = ${finder}; if (!el) return 'NOT FOUND'; el.scrollIntoView({block:'center'}); el.click(); return 'clicked'; })()`;
+}
+
+for (const step of (clickSelector ?? '').split('>>').map((s) => s.trim()).filter(Boolean)) {
+  const res = await send('Runtime.evaluate', {
     returnByValue: true,
-    expression: `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'NOT FOUND'; el.scrollIntoView({block:'center'}); el.click(); return 'clicked'; })()`,
+    expression: stepExpression(step),
   });
-  console.log('  click', sel, '->', clicked.result.value);
+  console.log('  step', step.slice(0, 60), '->', res.result.value);
   await wait(1200);
 }
 

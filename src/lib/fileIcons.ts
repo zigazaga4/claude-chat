@@ -403,6 +403,18 @@ export function getFileMeta(name: string): FileMeta {
   return EXT[ext] ?? FALLBACK;
 }
 
+/**
+ * Prism language for a file PATH — the one place that turns "what file is
+ * this" into "which grammar colours it". Takes either separator: SSH
+ * workspaces on Windows hand us `C:\Users\...` paths, and a forward-slash-only
+ * split would feed the whole path to the extension lookup and miss every
+ * special name. Falls back to 'text', which Prism renders as one plain token.
+ */
+export function languageForPath(path: string): string {
+  const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  return getFileMeta(name).lang ?? 'text';
+}
+
 // Re-export a stable shape for the few callers that wanted the "next config"
 // triangle. Other glyphs like Zap / Triangle are available if a future entry
 // needs them; importing them once here keeps the dependency surface honest.

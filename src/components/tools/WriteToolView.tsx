@@ -56,7 +56,7 @@ export function WriteToolView({ block }: { block: ToolUseBlock }) {
           </div>
           <div>
             <FieldLabel>{isOverwrite ? 'Diff (replaced → written)' : 'New file'}</FieldLabel>
-            <DiffView prior={priorContent ?? ''} next={content} />
+            <DiffView prior={priorContent ?? ''} next={content} path={filePath} />
           </div>
           {block.result && (
             <div>
