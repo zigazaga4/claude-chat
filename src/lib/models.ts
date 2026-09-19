@@ -170,22 +170,22 @@ export const MODELS: ModelInfo[] = [
     provider: 'deepseek',
   },
   {
-    // The same V4.1-Flash as above, billed through OpenRouter rather than a
-    // DeepSeek account. Identical model at an identical price, so the only
-    // thing this second door changes is which balance it draws down.
+    // The same V4.1-Flash as the first-party entry above, billed through
+    // OpenRouter rather than a DeepSeek account — a second door drawing down a
+    // different balance.
     //
-    // Deliberately NO `:nitro`, unlike the Kimi entry below — here that suffix
-    // would be a downgrade. DeepSeek serves this model first-party at
-    // $0.15/$0.60 per Mtok, unquantised, with the full 1M window and 99.99%
-    // uptime; every third-party host on OpenRouter is fp8 or fp4 at
-    // $0.30/$1.20, double the output price for degraded weights. Measured
-    // 2026-09-11: the bare slug, `:floor` and `:nitro` all land on DeepSeek
-    // today, so the suffix only decides where a FALLBACK goes when DeepSeek is
-    // down. The bare slug is kept because its default routing weighs uptime,
-    // where `:floor` would chase the next-cheapest host — a 262k-context
-    // endpoint at 76% uptime, which would silently truncate a long
-    // conversation this entry advertises as 1M.
+    // Routed through the `@preset/deepseek-v4-1-flash-fp8` OpenRouter preset
+    // (see `wireId`), NOT the bare slug. The bare slug load-balances across
+    // every host, and OpenRouter's DeepSeek fleet includes fp4 hosts (Relace,
+    // Sail Research) whose 50% discount buys degraded weights, plus a spread of
+    // undeclared-quantisation hosts. The preset allows only declared
+    // fp8-or-better quantisations (no fp4, no `unknown`) and sorts by price, so
+    // it lands on the cheapest reference-quality host — DeepInfra fp8 at
+    // $0.14/$0.42 per Mtok, verified 2026-09-19 — failing over only to other
+    // fp8 hosts. Same lever as the GLM entry below; the preset lives in the
+    // OpenRouter account behind OPENROUTER_API_KEY.
     id: 'deepseek/deepseek-v4.1-flash',
+    wireId: '@preset/deepseek-v4-1-flash-fp8',
     label: 'DeepSeek V4.1 Flash (OpenRouter)',
     shortLabel: 'DS Flash (OR)',
     thinkingType: 'adaptive',
@@ -283,9 +283,10 @@ export const MODELS: ModelInfo[] = [
     // OpenRouter is the only route: the coding-plan endpoint above is
     // subscription-gated, and this model is not on it.
     //
-    // The bare slug is deliberate — this model has 29 hosts on OpenRouter and
-    // the suffixes sort them badly for quality. Measured 2026-09-19, three
-    // runs each through the same /v1/messages endpoint the CLI dials:
+    // Routed through the `@preset/glm-5-3-flash-fp8` OpenRouter preset (see
+    // `wireId`), NOT the bare slug: this model has 29 hosts on OpenRouter and
+    // no slug suffix can pin their precision. Measured 2026-09-19, three runs
+    // each through the same /v1/messages endpoint the CLI dials:
     //
     //   bare      Parasail, StreamLake  declared fp8   $0.15/$0.50 per Mtok
     //   :nitro    Together ×3           undeclared     $0.15/$0.50
@@ -293,22 +294,26 @@ export const MODELS: ModelInfo[] = [
     //   :exacto   InferenceNet, DeepInfra  fp4         $0.075 — and DeepInfra
     //                                                   returned ONE output token
     //
-    // fp8 is the precision Z.AI serves first-party, and $0.15/$0.50 is what
-    // Z.AI's own OpenRouter endpoint charges for it, so the bare slug lands on
-    // reference-quality weights at the reference price. `:floor` and `:exacto`
-    // reach the fp4 hosts, whose 50% discount buys degraded weights; `:nitro`
-    // pins a host that does not declare its precision, for no saving.
+    // fp8 is the precision Z.AI serves first-party at $0.15/$0.50 per Mtok, so
+    // reference quality lives on the fp8 hosts; `:floor`/`:exacto` chase the
+    // fp4 hosts whose 50% discount buys degraded weights, and `:nitro` pins an
+    // undeclared-precision host for no saving. That bare-slug roulette is the
+    // likely reason main turns silently failed while only the cheap background
+    // model reached the OpenRouter logs.
     //
-    // What the slug CANNOT do is guarantee fp8 — OpenRouter load-balances, and
-    // a `provider.quantizations` filter in the request body was measured to
-    // change nothing on the Anthropic-compatible endpoint (and the CLI could
-    // not send one anyway). The hard guarantee is an OpenRouter preset with
-    // quantization pinned, reached through the per-model wire override
-    // (`CLAUDECHAT_SDK_MODEL_Z_AI_GLM_5_3_FLASH=@preset/…`, see providers.ts).
+    // So this entry pins routing with a PRESET: `@preset/glm-5-3-flash-fp8`
+    // allows only declared fp8-or-better quantisations (no fp4/nvfp4, no
+    // `unknown`) and sorts by price, landing on Z.AI/StreamLake fp8 — verified
+    // 2026-09-19 to serve the full tools+thinking+streaming payload. A body
+    // `provider` filter DOES work on OpenRouter's `/v1/messages` (verified —
+    // the earlier "changes nothing" note was wrong), but the spawned CLI can't
+    // add body fields, so the preset, carried as the model id, is the only
+    // lever that works for both the CLI and OpenCode backends.
     //
     // Not offered: `:batch` (async, not a chat endpoint) and `glm-5.3-flashx`,
     // the 200 tok/s variant at $0.37/$1.25 — 2.5× the price for speed alone.
     id: 'z-ai/glm-5.3-flash',
+    wireId: '@preset/glm-5-3-flash-fp8',
     label: 'GLM 5.3 Flash (OpenRouter)',
     shortLabel: 'GLM Flash (OR)',
     thinkingType: 'adaptive',
