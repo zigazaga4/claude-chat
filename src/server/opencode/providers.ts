@@ -36,6 +36,7 @@ import {
   getModelInfo,
   getProvider,
   getWireModelId,
+  modelEnvSuffix,
   type ModelId,
   type ModelProvider,
 } from '@/lib/models';
@@ -117,11 +118,6 @@ export function registryProviderId(provider: OpencodeProvider): string {
   return SPECS[provider].registryId;
 }
 
-/** `moonshotai/kimi-k3` → `MOONSHOTAI_KIMI_K3`, for env-var naming. */
-function envSuffix(model: ModelId): string {
-  return model.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-}
-
 /**
  * Model id to put on the wire.
  *
@@ -136,7 +132,7 @@ function envSuffix(model: ModelId): string {
  * `CLAUDECHAT_OPENCODE_MODEL_GLM_5_2=glm-5.2-highspeed[1m]`.
  */
 export function opencodeModelId(model: ModelId, env: NodeJS.ProcessEnv): string {
-  const override = env[`CLAUDECHAT_OPENCODE_MODEL_${envSuffix(model)}`]?.trim();
+  const override = env[`CLAUDECHAT_OPENCODE_MODEL_${modelEnvSuffix(model)}`]?.trim();
   return override || getWireModelId(model);
 }
 
@@ -174,11 +170,13 @@ function extraModelsFor(
   for (const info of MODELS) {
     if (getProvider(info.id) !== provider) continue;
     const wire = opencodeModelId(info.id, env);
-    // Only routing-suffixed ids need synthesising. A plain id — including one
-    // that differs from ours, like `kimi-k3-code` → `k3` — is already in the
-    // catalog with pricing and limits we should not be guessing at, and
-    // declaring it here would override that curated metadata with estimates.
-    if (!wire.includes(':')) continue;
+    // Only routing-suffixed ids and OpenRouter presets (`@preset/…`, the
+    // account-side routing rules an override can point a model at) need
+    // synthesising. A plain id — including one that differs from ours, like
+    // `kimi-k3-code` → `k3` — is already in the catalog with pricing and
+    // limits we should not be guessing at, and declaring it here would
+    // override that curated metadata with estimates.
+    if (!wire.includes(':') && !wire.startsWith('@preset/')) continue;
     models[wire] = {
       id: wire,
       name: info.label,

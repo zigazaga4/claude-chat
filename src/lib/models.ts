@@ -33,6 +33,7 @@ export type ModelId =
   | 'kimi-k3-code'
   | 'kimi-k3'
   | 'glm-5.3'
+  | 'z-ai/glm-5.3-flash'
   | 'qwen3.8-max';
 
 /**
@@ -276,6 +277,46 @@ export const MODELS: ModelInfo[] = [
     contextWindow: 1_000_000,
   },
   {
+    // Z.AI's efficiency tier, via OpenRouter. Native multimodal, hybrid
+    // sparse/linear attention, 1M context, 131k max output; positioned for
+    // coding and long-horizon agent work at a sixth of GLM 5.3's price.
+    // OpenRouter is the only route: the coding-plan endpoint above is
+    // subscription-gated, and this model is not on it.
+    //
+    // The bare slug is deliberate — this model has 29 hosts on OpenRouter and
+    // the suffixes sort them badly for quality. Measured 2026-09-19, three
+    // runs each through the same /v1/messages endpoint the CLI dials:
+    //
+    //   bare      Parasail, StreamLake  declared fp8   $0.15/$0.50 per Mtok
+    //   :nitro    Together ×3           undeclared     $0.15/$0.50
+    //   :floor    Relace/Together/…     mixed          $0.09–0.15
+    //   :exacto   InferenceNet, DeepInfra  fp4         $0.075 — and DeepInfra
+    //                                                   returned ONE output token
+    //
+    // fp8 is the precision Z.AI serves first-party, and $0.15/$0.50 is what
+    // Z.AI's own OpenRouter endpoint charges for it, so the bare slug lands on
+    // reference-quality weights at the reference price. `:floor` and `:exacto`
+    // reach the fp4 hosts, whose 50% discount buys degraded weights; `:nitro`
+    // pins a host that does not declare its precision, for no saving.
+    //
+    // What the slug CANNOT do is guarantee fp8 — OpenRouter load-balances, and
+    // a `provider.quantizations` filter in the request body was measured to
+    // change nothing on the Anthropic-compatible endpoint (and the CLI could
+    // not send one anyway). The hard guarantee is an OpenRouter preset with
+    // quantization pinned, reached through the per-model wire override
+    // (`CLAUDECHAT_SDK_MODEL_Z_AI_GLM_5_3_FLASH=@preset/…`, see providers.ts).
+    //
+    // Not offered: `:batch` (async, not a chat endpoint) and `glm-5.3-flashx`,
+    // the 200 tok/s variant at $0.37/$1.25 — 2.5× the price for speed alone.
+    id: 'z-ai/glm-5.3-flash',
+    label: 'GLM 5.3 Flash (OpenRouter)',
+    shortLabel: 'GLM Flash (OR)',
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+    provider: 'openrouter',
+    contextWindow: 1_048_576,
+  },
+  {
     // Alibaba's flagship, billed against the Model Studio Token Plan (the
     // credits subscription) rather than per-token. Same weights as the
     // pay-as-you-go DASHSCOPE endpoint, but reached with a dedicated plan key
@@ -386,6 +427,15 @@ export function getContextWindow(id: ModelId): number {
  */
 export function getWireModelId(id: ModelId): string {
   return getModelInfo(id).wireId ?? id;
+}
+
+/**
+ * `moonshotai/kimi-k3` → `MOONSHOTAI_KIMI_K3`, for per-model env-var naming.
+ * Shared by both backends' wire overrides so one model is spelled one way in
+ * `CLAUDECHAT_SDK_MODEL_*` and `CLAUDECHAT_OPENCODE_MODEL_*` alike.
+ */
+export function modelEnvSuffix(id: ModelId): string {
+  return id.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
 }
 
 /**

@@ -63,6 +63,13 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-lime-500/40 bg-lime-500/10 text-lime-200 hover:bg-lime-500/15',
     dot: 'bg-lime-400',
   },
+  // The Flash tier of the same family, routed through OpenRouter — one step
+  // along from lime so the two GLMs read as siblings, as the DeepSeek and Kimi
+  // pairs do.
+  'z-ai/glm-5.3-flash': {
+    btn: 'border-green-500/40 bg-green-500/10 text-green-200 hover:bg-green-500/15',
+    dot: 'bg-green-400',
+  },
   'qwen3.8-max': {
     btn: 'border-orange-500/40 bg-orange-500/10 text-orange-200 hover:bg-orange-500/15',
     dot: 'bg-orange-400',

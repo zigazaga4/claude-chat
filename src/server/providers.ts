@@ -14,6 +14,8 @@
 import {
   getContextWindow,
   getProvider,
+  getWireModelId,
+  modelEnvSuffix,
   type ModelId,
   type ModelProvider,
 } from '@/lib/models';
@@ -170,6 +172,29 @@ export class MissingProviderCredentialError extends Error {
 }
 
 type Env = NodeJS.ProcessEnv;
+
+/**
+ * Model id to hand the CLI for `model` — the Agent SDK twin of
+ * `opencodeModelId`.
+ *
+ * `getWireModelId` already carries routing suffixes like `:nitro`; this adds
+ * a per-model environment override on top, e.g.
+ * `CLAUDECHAT_SDK_MODEL_Z_AI_GLM_5_3_FLASH=@preset/glm-flash-fp8`.
+ *
+ * The case that motivates it is OpenRouter quantisation. The CLI speaks the
+ * Messages API and nothing else, so it cannot attach OpenRouter's
+ * `provider` block to a request — and a slug suffix can sort hosts by price
+ * or throughput but cannot say "fp8 or better". An OpenRouter *preset* can:
+ * it is a saved routing policy on the account (allowed quantisations,
+ * ignored providers, sort order) addressed as a model id, which is the one
+ * thing the CLI can carry. Presets are created in OpenRouter's dashboard,
+ * not its API, so this override is how one reaches the app without a code
+ * change.
+ */
+export function sdkWireModelId(model: ModelId, env: Env): string {
+  const override = env[`CLAUDECHAT_SDK_MODEL_${modelEnvSuffix(model)}`]?.trim();
+  return override || getWireModelId(model);
+}
 
 /**
  * Variables that would silently re-route the request somewhere other than the

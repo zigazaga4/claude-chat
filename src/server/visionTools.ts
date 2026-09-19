@@ -28,16 +28,23 @@ import { z } from 'zod';
 import type { SFTPWrapper } from 'ssh2';
 import { getHost, type ConnectOpts, type RemoteHost } from './sshHosts';
 import { getStoredSshPassword, getWorkspace } from './workspaces';
-import { buildProviderEnv } from './providers';
+import { buildProviderEnv, sdkWireModelId } from './providers';
 import { resolveRemotePath } from './remoteShell';
 import { parseCwd } from '@/lib/cwd';
-import { getProvider, getWireModelId, type ModelId } from '@/lib/models';
+import { getProvider, type ModelId } from '@/lib/models';
 
 /** Model used to actually look at the image. Set per provider. */
 const VISION_MODEL: Partial<Record<ReturnType<typeof getProvider>, ModelId>> = {
   // glm-5.2 is multimodal and is the user's subscription model — verified it
   // accepts Anthropic image blocks and reads them correctly.
   zai: 'glm-5.3',
+  // GLM 5.3 Flash is native multimodal and the cheapest capable vision model
+  // on the marketplace ($0.15/Mtok input). Verified 2026-09-19 through the
+  // Anthropic-compatible endpoint: a base64 PNG image block came back
+  // correctly described, at $0.00003 for the call. Note its thinking is
+  // always on and counts against `max_tokens` — a 40-token budget returned
+  // no text at all.
+  openrouter: 'z-ai/glm-5.3-flash',
 };
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -124,7 +131,7 @@ async function describeImage(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: getWireModelId(model),
+      model: sdkWireModelId(model, env),
       max_tokens: 1024,
       messages: [
         {

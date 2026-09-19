@@ -51,7 +51,6 @@ import {
   getDefaultEffort,
   getModelInfo,
   getProvider,
-  getWireModelId,
   isValidEffort,
   isValidModelId,
   supportsEffortLadder,
@@ -61,6 +60,7 @@ import {
 import {
   MissingProviderCredentialError,
   buildProviderEnv,
+  sdkWireModelId,
 } from '@/server/providers';
 import type {
   CompactBoundaryBlock,
@@ -1901,7 +1901,7 @@ export async function POST(req: NextRequest) {
           prompt: promptInput,
           options: {
             cwd: sdkCwd,
-            model: getWireModelId(resolvedModel),
+            model: sdkWireModelId(resolvedModel, process.env),
             ...thinkingControls,
             includePartialMessages: true,
             tools: { type: 'preset', preset: 'claude_code' },
