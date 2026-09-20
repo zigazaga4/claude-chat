@@ -297,9 +297,7 @@ export const MODELS: ModelInfo[] = [
     // fp8 is the precision Z.AI serves first-party at $0.15/$0.50 per Mtok, so
     // reference quality lives on the fp8 hosts; `:floor`/`:exacto` chase the
     // fp4 hosts whose 50% discount buys degraded weights, and `:nitro` pins an
-    // undeclared-precision host for no saving. That bare-slug roulette is the
-    // likely reason main turns silently failed while only the cheap background
-    // model reached the OpenRouter logs.
+    // undeclared-precision host for no saving.
     //
     // So this entry pins routing with a PRESET: `@preset/glm-5-3-flash-fp8`
     // allows only declared fp8-or-better quantisations (no fp4/nvfp4, no
