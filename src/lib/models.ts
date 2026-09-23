@@ -5,8 +5,8 @@
  * can import it without dragging in any React or browser-only code.
  *
  * Naming convention matches Anthropic's documented model IDs. Only CURRENT
- * Claude tiers are listed — Fable 5.1, Opus 5, Sonnet 5. Every superseded id
- * (Fable 5, Opus 4.8/4.7, Sonnet 4.6, Haiku 4.5) was dropped from the picker
+ * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5. Every superseded id
+ * (Fable 5, Opus 5/4.8/4.7, Sonnet 4.6, Haiku 4.5) was dropped from the picker
  * and lives on only in `RETIRED_MODEL_IDS`, which re-points persisted
  * conversations at its successor. `claude-sonnet-5` is the floor; the
  * Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
@@ -24,7 +24,7 @@
 
 export type ModelId =
   | 'claude-fable-5-1'
-  | 'claude-opus-5'
+  | 'claude-opus-5-5'
   | 'claude-sonnet-5'
   | 'deepseek-v4-pro'
   | 'deepseek-flash'
@@ -113,12 +113,16 @@ export const MODELS: ModelInfo[] = [
     defaultEffort: 'high',
   },
   {
-    // Current Opus — for complex agentic coding and enterprise work. Same
-    // $5/$25 per-MTok pricing, 1M context, and 128k max output as Opus 4.8;
-    // adaptive thinking always on, effort defaults to high.
-    id: 'claude-opus-5',
-    label: 'Claude Opus 5',
-    shortLabel: 'Opus 5',
+    // Current Opus — Anthropic's flagship for complex agentic coding and
+    // enterprise work, released 2026-09-22 as the successor to Opus 5. Cheaper
+    // than Opus 5 ($4/$20 vs $5/$25 per MTok), ~40% lower typical-workload cost
+    // and faster output; 1M context, 128k max output. Adaptive thinking is on
+    // by default (omitting `thinking` still thinks); effort defaults to high,
+    // and `budget_tokens` is rejected (400) — the low → max effort ladder is
+    // the depth knob.
+    id: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
+    shortLabel: 'Opus 5.5',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -335,7 +339,7 @@ export const MODELS: ModelInfo[] = [
   },
 ];
 
-export const DEFAULT_MODEL_ID: ModelId = 'claude-opus-5';
+export const DEFAULT_MODEL_ID: ModelId = 'claude-opus-5-5';
 
 /**
  * Model used by the "auto effort" feature to classify a request and recommend
@@ -376,11 +380,15 @@ const RETIRED_MODEL_IDS: Record<string, ModelId> = {
   // than silently landing on the default (Opus 5, far pricier per token).
   'claude-sonnet-4-6': 'claude-sonnet-5',
   'claude-haiku-4-5': 'claude-sonnet-5',
-  // Legacy Opus, likewise dropped. These map UP to Opus 5 rather than across
-  // to Sonnet: someone who chose Opus wanted the frontier tier, and Opus 5 is
-  // the same price per token as 4.8 was.
-  'claude-opus-4-8': 'claude-opus-5',
-  'claude-opus-4-7': 'claude-opus-5',
+  // Legacy Opus, likewise dropped — now including Opus 5 itself, retired
+  // forward to its 5.5 point release: cheaper per token ($4/$20 vs $5/$25),
+  // same 1M context, 128k output, and adaptive-only thinking, so a pinned
+  // conversation moves straight across. The older two map UP to the current
+  // Opus rather than across to Sonnet — someone who chose Opus wanted the
+  // frontier tier.
+  'claude-opus-5': 'claude-opus-5-5',
+  'claude-opus-4-8': 'claude-opus-5-5',
+  'claude-opus-4-7': 'claude-opus-5-5',
   // Fable 5 → 5.1 is a point release within the same flagship tier: same 1M
   // context, same 128k output, same adaptive-only thinking, same price. So a
   // conversation pinned to it moves straight across rather than landing on a

@@ -20,7 +20,7 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15',
     dot: 'bg-amber-400',
   },
-  'claude-opus-5': {
+  'claude-opus-5-5': {
     btn: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/15',
     dot: 'bg-purple-400',
   },
