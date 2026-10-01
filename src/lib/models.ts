@@ -5,10 +5,10 @@
  * can import it without dragging in any React or browser-only code.
  *
  * Naming convention matches Anthropic's documented model IDs. Only CURRENT
- * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5. Every superseded id
- * (Fable 5, Opus 5/4.8/4.7, Sonnet 4.6, Haiku 4.5) was dropped from the picker
+ * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5.5. Every superseded id
+ * (Fable 5, Opus 5/4.8/4.7, Sonnet 5/4.6, Haiku 4.5) was dropped from the picker
  * and lives on only in `RETIRED_MODEL_IDS`, which re-points persisted
- * conversations at its successor. `claude-sonnet-5` is the floor; the
+ * conversations at its successor. `claude-sonnet-5-5` is the floor; the
  * Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
  * point release, the same way the Opus and Sonnet tiers always have. The
  * `model` option is a free-form string the CLI resolves, so no SDK version
@@ -25,7 +25,7 @@
 export type ModelId =
   | 'claude-fable-5-1'
   | 'claude-opus-5-5'
-  | 'claude-sonnet-5'
+  | 'claude-sonnet-5-5'
   | 'deepseek-v4-pro'
   | 'deepseek-flash'
   | 'deepseek/deepseek-v4.1-flash'
@@ -127,11 +127,12 @@ export const MODELS: ModelInfo[] = [
     defaultEffort: 'high',
   },
   {
-    // Current Sonnet — best balance of speed and intelligence. Adaptive
-    // thinking is always on; the API defaults its effort to high.
-    id: 'claude-sonnet-5',
-    label: 'Claude Sonnet 5',
-    shortLabel: 'Sonnet 5',
+    // Current Sonnet — best balance of speed and intelligence, released
+    // 2026-10-01 as the successor to Sonnet 5; 1M context, 128k max output.
+    // Adaptive thinking is always on; the API defaults its effort to high.
+    id: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
+    shortLabel: 'Sonnet 5.5',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -343,10 +344,10 @@ export const DEFAULT_MODEL_ID: ModelId = 'claude-opus-5-5';
 
 /**
  * Model used by the "auto effort" feature to classify a request and recommend
- * a thinking-effort level before the main turn starts. Sonnet 5 is fast and
+ * a thinking-effort level before the main turn starts. Sonnet 5.5 is fast and
  * cheap enough to gate every first message without adding noticeable latency.
  */
-export const SUGGESTION_MODEL_ID: ModelId = 'claude-sonnet-5';
+export const SUGGESTION_MODEL_ID: ModelId = 'claude-sonnet-5-5';
 
 /**
  * Result of the auto-effort classifier: the recommended effort plus a short
@@ -374,12 +375,14 @@ export function isValidModelId(id: string): id is ModelId {
 const RETIRED_MODEL_IDS: Record<string, ModelId> = {
   'glm-5.1': 'glm-5.3',
   'glm-5.2': 'glm-5.3',
-  // Claude tiers below Sonnet 5 were dropped from the picker. Both map to
-  // Sonnet 5 — the cheapest Claude still offered, and a strict upgrade on
-  // either — so a conversation pinned to one keeps running on Claude rather
-  // than silently landing on the default (Opus 5, far pricier per token).
-  'claude-sonnet-4-6': 'claude-sonnet-5',
-  'claude-haiku-4-5': 'claude-sonnet-5',
+  // Claude tiers at or below Sonnet, dropped from the picker — including
+  // Sonnet 5 itself, retired forward to its 5.5 point release. All map to the
+  // current Sonnet: the cheapest Claude still offered and a strict upgrade on
+  // each, so a conversation pinned to one keeps running on Claude rather than
+  // silently landing on the default (Opus, far pricier per token).
+  'claude-sonnet-5': 'claude-sonnet-5-5',
+  'claude-sonnet-4-6': 'claude-sonnet-5-5',
+  'claude-haiku-4-5': 'claude-sonnet-5-5',
   // Legacy Opus, likewise dropped — now including Opus 5 itself, retired
   // forward to its 5.5 point release: cheaper per token ($4/$20 vs $5/$25),
   // same 1M context, 128k output, and adaptive-only thinking, so a pinned

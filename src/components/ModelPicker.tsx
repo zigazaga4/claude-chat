@@ -24,7 +24,7 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-purple-500/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/15',
     dot: 'bg-purple-400',
   },
-  'claude-sonnet-5': {
+  'claude-sonnet-5-5': {
     btn: 'border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15',
     dot: 'bg-sky-400',
   },
