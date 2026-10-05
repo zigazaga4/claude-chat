@@ -56,6 +56,17 @@ fi
 # this shell (start.sh -> next -> CLI), and only the environment propagates.
 export CLAUDE_CODE_THRIFTY_SONIC="${CLAUDE_CODE_THRIFTY_SONIC:-false}"
 
+# Turn off the CLI's nonessential traffic: Statsig/GrowthBook feature-flag
+# fetches, telemetry, error reporting, and the autoupdater. One of those flags
+# (cache-diagnosis-2026-04-07) rolled on in CLI 2.1.286 and started attaching a
+# `diagnostics.previous_message_id` to requests; driven through the Agent SDK it
+# passes an id the API rejects ("must be the id from a prior /v1/messages
+# response, starts with msg_"), 400-ing the turn. cloudchat has no use for cache
+# diagnostics, and killing the whole flag layer also stops the next surprise
+# server-side rollout from changing CLI behaviour under a running deployment.
+# Same propagation reason as above: the CLI is a grandchild of this shell.
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}"
+
 # Escape hatch for contexts that should not touch the tunnel — the Electron
 # wrapper starts its own server on a random port, and enabling serve for that
 # port would point the public hostname at a server that is about to disappear.
