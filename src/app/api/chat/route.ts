@@ -1766,13 +1766,28 @@ export async function POST(req: NextRequest) {
         // rejects makes the conversation permanently unresumable, and the bad
         // blocks are already on disk by the time we see the failure — so the
         // repair has to happen here, ahead of `resume`, not after an error.
+        //
+        // The same pass clears an assistant message id written by a previous
+        // non-Anthropic turn, which Anthropic rejects when the CLI replays it
+        // as a cache-diagnostics `previous_message_id`.
         if (sessionId) {
           try {
             const repair = repairTranscript(sdkTranscriptPath(sdkCwd, sessionId));
             if (repair.repaired) {
+              const what: string[] = [];
+              if (repair.removed > 0) {
+                what.push(
+                  `dropped ${repair.removed} record(s) for provider tool(s) ` +
+                    repair.toolNames.join(', '),
+                );
+              }
+              if (repair.idsDropped > 0) {
+                what.push(
+                  `cleared ${repair.idsDropped} unusable assistant message id(s)`,
+                );
+              }
               console.warn(
-                `[chat] repaired transcript ${sessionId}: dropped ${repair.removed} ` +
-                  `record(s) for provider tool(s) ${repair.toolNames.join(', ')}`,
+                `[chat] repaired transcript ${sessionId}: ${what.join('; ')}`,
               );
             }
           } catch {
