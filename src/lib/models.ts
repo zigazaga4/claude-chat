@@ -1,16 +1,16 @@
 /**
- * Model registry shared between client and server. Lists the four models the
- * UI exposes, the always-on thinking config each one uses, and the effort
+ * Model registry shared between client and server. Lists the models the UI
+ * exposes, the always-on thinking config each one uses, and the effort
  * ("thinking power") options. Keep this file dependency-free so the API route
  * can import it without dragging in any React or browser-only code.
  *
  * Naming convention matches Anthropic's documented model IDs. Only CURRENT
- * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5.5. Every superseded id
- * (Fable 5, Opus 5/4.8/4.7, Sonnet 5/4.6, Haiku 4.5) was dropped from the picker
- * and lives on only in `RETIRED_MODEL_IDS`, which re-points persisted
- * conversations at its successor. `claude-sonnet-5-5` is the floor; the
- * Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
- * point release, the same way the Opus and Sonnet tiers always have. The
+ * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5. Every
+ * superseded id (Fable 5, Opus 5/4.8/4.7, Sonnet 5/4.6, Haiku 4.5) was dropped
+ * from the picker and lives on only in `RETIRED_MODEL_IDS`, which re-points
+ * persisted conversations at its successor. `claude-haiku-5-5` is the floor;
+ * the Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
+ * point release, the same way the Opus, Sonnet and Haiku tiers always have. The
  * `model` option is a free-form string the CLI resolves, so no SDK version
  * bump is required to use a new ID.
  *
@@ -26,6 +26,7 @@ export type ModelId =
   | 'claude-fable-5-1'
   | 'claude-opus-5-5'
   | 'claude-sonnet-5-5'
+  | 'claude-haiku-5-5'
   | 'deepseek-v4-pro'
   | 'deepseek-flash'
   | 'deepseek/deepseek-v4.1-flash'
@@ -133,6 +134,20 @@ export const MODELS: ModelInfo[] = [
     id: 'claude-sonnet-5-5',
     label: 'Claude Sonnet 5.5',
     shortLabel: 'Sonnet 5.5',
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+  },
+  {
+    // Current Haiku, released 2026-10-07 as the successor to Haiku 4.5; 1M
+    // context (up from 200k), 128k max output. The first Haiku with adaptive
+    // thinking and the effort ladder — verified live 2026-10-08: adaptive with
+    // every effort low → max returns 200. Unlike Opus/Sonnet 5.5, thinking CAN
+    // be disabled here, but only at effort high or below (xhigh/max 400) —
+    // moot, since this app keeps it on. Claude Code 2.1.292 didn't know the id
+    // (it capped auto-compact at 200k); 2.1.294 does.
+    id: 'claude-haiku-5-5',
+    label: 'Claude Haiku 5.5',
+    shortLabel: 'Haiku 5.5',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -375,14 +390,18 @@ export function isValidModelId(id: string): id is ModelId {
 const RETIRED_MODEL_IDS: Record<string, ModelId> = {
   'glm-5.1': 'glm-5.3',
   'glm-5.2': 'glm-5.3',
-  // Claude tiers at or below Sonnet, dropped from the picker — including
-  // Sonnet 5 itself, retired forward to its 5.5 point release. All map to the
-  // current Sonnet: the cheapest Claude still offered and a strict upgrade on
-  // each, so a conversation pinned to one keeps running on Claude rather than
-  // silently landing on the default (Opus, far pricier per token).
+  // Legacy Sonnet, dropped from the picker — including Sonnet 5 itself,
+  // retired forward to its 5.5 point release. Both map to the current Sonnet,
+  // a strict upgrade on each, so a conversation pinned to one stays in its
+  // tier rather than silently landing on the default (Opus, far pricier per
+  // token).
   'claude-sonnet-5': 'claude-sonnet-5-5',
   'claude-sonnet-4-6': 'claude-sonnet-5-5',
-  'claude-haiku-4-5': 'claude-sonnet-5-5',
+  // Haiku 4.5 likewise moves to its own tier's successor rather than up to
+  // Sonnet: someone who chose Haiku wanted the small, fast tier, and Haiku 5.5
+  // is a strict upgrade on it (1M context vs 200k, 128k output vs 64k, and
+  // adaptive thinking plus the effort ladder, neither of which 4.5 had).
+  'claude-haiku-4-5': 'claude-haiku-5-5',
   // Legacy Opus, likewise dropped — now including Opus 5 itself, retired
   // forward to its 5.5 point release: cheaper per token ($4/$20 vs $5/$25),
   // same 1M context, 128k output, and adaptive-only thinking, so a pinned
@@ -394,8 +413,7 @@ const RETIRED_MODEL_IDS: Record<string, ModelId> = {
   'claude-opus-4-7': 'claude-opus-5-5',
   // Fable 5 → 5.1 is a point release within the same flagship tier: same 1M
   // context, same 128k output, same adaptive-only thinking, same price. So a
-  // conversation pinned to it moves straight across rather than landing on a
-  // different tier the way the entries above have to.
+  // conversation pinned to it moves straight across.
   'claude-fable-5': 'claude-fable-5-1',
   // DeepSeek renamed its flash tier to a floating `deepseek-flash` alias when
   // V4.1-Flash shipped. Same tier, same 1M context, same price — so this is a

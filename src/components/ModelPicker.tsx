@@ -28,6 +28,12 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-sky-500/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15',
     dot: 'bg-sky-400',
   },
+  // Indigo: of the hues still free, the one furthest from any already in use
+  // (blue and purple are its nearest taken neighbours).
+  'claude-haiku-5-5': {
+    btn: 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15',
+    dot: 'bg-indigo-400',
+  },
   'deepseek-v4-pro': {
     btn: 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/15',
     dot: 'bg-blue-400',
