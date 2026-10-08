@@ -22,6 +22,7 @@ import { cn } from '@/lib/cn';
 import { parseCwd, shortLabel } from '@/lib/cwd';
 import type { ChatMessage } from '@/lib/types';
 import { DEFAULT_BACKEND, type ChatBackend } from '@/lib/backends';
+import { CONVERSATIONS_CHANGED_EVENT } from '@/lib/conversationApi';
 import { useInstances } from '@/state/instances';
 import ConnectSshModal from './ConnectSshModal';
 import FolderPicker from './FolderPicker';
@@ -272,6 +273,20 @@ export default function WorkspaceList() {
     },
     [loadConversations],
   );
+
+  // A rewind in the chat pane creates a conversation this list has not seen.
+  // Re-read that folder (only if it was ever loaded — an unexpanded folder
+  // fetches fresh on expand anyway) and the workspace rows, whose "last
+  // conversation" just changed.
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const cwd = (e as CustomEvent<{ cwd?: string }>).detail?.cwd;
+      if (cwd && fetchedCwdsRef.current.has(cwd)) void loadConversations(cwd);
+      void loadWorkspaces();
+    };
+    window.addEventListener(CONVERSATIONS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(CONVERSATIONS_CHANGED_EVENT, onChanged);
+  }, [loadConversations, loadWorkspaces]);
 
   // ---- Auth flow for SSH rows ---------------------------------------------
 

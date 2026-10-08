@@ -52,6 +52,7 @@ export function getDb(): Database.Database {
       seq             INTEGER NOT NULL,
       created_at      INTEGER NOT NULL,
       blocks_json     TEXT NOT NULL,
+      sdk_uuid        TEXT,
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_messages_conv_seq
@@ -139,6 +140,13 @@ export function getDb(): Database.Database {
     // The 'sdk' default is exactly right for back-fill: every conversation
     // that pre-dates this column was run by the Agent SDK.
     "ALTER TABLE conversations ADD COLUMN backend TEXT NOT NULL DEFAULT 'sdk'",
+    // The CLI transcript entry an assistant row ends on: the uuid of the last
+    // top-level chain entry its turn produced. It is the fork point for
+    // "Rewind to here" — forkSession slices the transcript up to and including
+    // that entry. NULL for rows written before the column existed, for OpenCode
+    // turns (no CLI transcript at all) and for user/system rows; such a row is
+    // simply not rewindable.
+    'ALTER TABLE messages ADD COLUMN sdk_uuid TEXT',
   ]) {
     try {
       db.exec(sql);

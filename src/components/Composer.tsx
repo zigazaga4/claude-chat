@@ -187,6 +187,16 @@ export default function Composer({
     // Mount-only: the per-instance key handles re-sizing on tab switches.
   }, []);
 
+  // The draft can also be replaced from outside the textarea — "Rewind to
+  // here" puts the rewound message back to be edited — with no input event to
+  // resize it. Typing resizes through onChange, so skip while focused.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el || document.activeElement === el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, [draft]);
+
   const clearInput = () => {
     setText('');
     setAttachments([]);

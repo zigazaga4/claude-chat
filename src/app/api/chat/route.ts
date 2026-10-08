@@ -1255,6 +1255,18 @@ export async function POST(req: NextRequest) {
        */
       let lastAssistantApiUsageTotal: number | null = null;
       /**
+       * uuid of the last top-level CLI transcript (chain) entry this turn has
+       * produced — the newest `assistant` or `user` message on the main thread.
+       * Stored on the turn's assistant row as the point "Rewind to here" forks
+       * the transcript at, so it must be the turn's LAST entry: forking at an
+       * earlier one would drop tool results the kept turn depends on.
+       *
+       * PER-TURN, reset in beginNextTurn. Subagent traffic never reaches the
+       * line that sets it (the `parent_tool_use_id` filter comes first), and
+       * neither do `stream_event` partials, which are not chain entries.
+       */
+      let turnLastChainUuid: string | null = null;
+      /**
        * Total context footprint described by one `usage` payload, or 0 when it
        * carries no counts.
        *
@@ -1387,6 +1399,7 @@ export async function POST(req: NextRequest) {
             seq: currentAssistantSeq,
             createdAt: currentAssistantCreatedAt,
             blocks: [...blocks],
+            sdkUuid: turnLastChainUuid,
           });
           touchConversation(conversationId, Date.now());
         });
@@ -1632,6 +1645,8 @@ export async function POST(req: NextRequest) {
         // last turn's reading in place answers "yes" for a turn that has not
         // started yet.
         lastAssistantApiUsageTotal = null;
+        // The previous turn's fork point was flushed by persistAssistant above.
+        turnLastChainUuid = null;
         currentTurn = next;
         turnLive = false;
         if (activeConversationId) {
@@ -2369,6 +2384,13 @@ export async function POST(req: NextRequest) {
           // Usage is filtered separately at each `reportUsage` call site,
           // because a subagent's context size must not move this meter either.
           if ((message as AnyRecord).parent_tool_use_id != null) continue;
+
+          // Rewind fork point — see `turnLastChainUuid`. Recorded here, after
+          // the subagent filter, and persisted with the turn's next write.
+          if (message.type === 'assistant' || message.type === 'user') {
+            const chainUuid = asString((message as AnyRecord).uuid);
+            if (chainUuid) turnLastChainUuid = chainUuid;
+          }
 
           if (message.type === 'stream_event') {
             const event = asRecord((message as AnyRecord).event);

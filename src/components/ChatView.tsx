@@ -1,8 +1,9 @@
 'use client';
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { Ghost, Loader2, Sparkles, Trash2 } from 'lucide-react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Ghost, Loader2, RotateCcw, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { forkConversation, notifyConversationsChanged } from '@/lib/conversationApi';
 import type {
   AssistantMessage,
   ChatMessage,
@@ -33,8 +34,10 @@ export default function ChatView() {
     patch,
     prependMessages,
     openConversation,
+    openNewConversation,
     discardThrowaway,
     keepThrowaway,
+    stateRef,
   } = useInstances();
   // Model + thinking settings are per-instance now: each tab remembers its own
   // picks. The pickers below read/write the active instance via `patch`.
@@ -208,6 +211,94 @@ export default function ChatView() {
     [active.queuedMessages, active.messages],
   );
 
+  // ===== Rewind to here =====
+  // Which messages get the button. Stored messages carry the server's verdict;
+  // ones created live during a stream have none and count as rewindable once
+  // the stream is over — except a live user message right after a stored
+  // answer that can't be forked at, since its fork point would be that answer.
+  // Nothing is offered mid-stream: the turn being written is not forkable yet.
+  const rewindableIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (active.backend !== 'sdk' || !active.sessionId || active.streaming) return ids;
+    let prevAssistantOk: boolean | null = null;
+    for (const m of active.messages) {
+      if (m.role === 'assistant') {
+        const ok = m.rewindable ?? true;
+        if (ok) ids.add(m.id);
+        prevAssistantOk = ok;
+      } else if (m.role === 'user') {
+        if (m.rewindable ?? prevAssistantOk ?? true) ids.add(m.id);
+      }
+    }
+    return ids;
+  }, [active.backend, active.sessionId, active.streaming, active.messages]);
+
+  /** The rewind in flight or the one that just failed, for one conversation. */
+  const [rewind, setRewind] = useState<{
+    sessionId: string;
+    messageId: string;
+    pending: boolean;
+    error: string | null;
+  } | null>(null);
+  const rewindBusyRef = useRef(false);
+
+  const onRewind = useCallback(
+    async (messageId: string) => {
+      const instanceId = active.id;
+      const sessionId = active.sessionId;
+      if (!sessionId || rewindBusyRef.current) return;
+      rewindBusyRef.current = true;
+      setRewind({ sessionId, messageId, pending: true, error: null });
+      try {
+        const result = await forkConversation(sessionId, messageId);
+        // The copy exists whatever happens next, so the sidebar should list it.
+        if (result.conversationId) notifyConversationsChanged(result.cwd);
+        let page: { messages: ChatMessage[]; oldestSeq: number | null; hasMoreOlder: boolean } | null =
+          null;
+        if (result.conversationId) {
+          const res = await fetch(
+            `/api/conversations/${encodeURIComponent(result.conversationId)}/messages` +
+              `?cwd=${encodeURIComponent(result.cwd)}`,
+          );
+          if (!res.ok) {
+            throw new Error(
+              `The copy was made and is in the folder's list, but could not be opened (HTTP ${res.status}).`,
+            );
+          }
+          page = (await res.json()) as typeof page;
+        }
+        setRewind(null);
+        // Only take the tab over if it is still where the user clicked. If
+        // they moved on while the copy was being made, it stays in the list.
+        const inst = stateRef.current.instances.find((i) => i.id === instanceId);
+        if (!inst || inst.sessionId !== sessionId || inst.view !== 'conversation') return;
+        // Land at the end of the copy — that is where the user carries on.
+        wasNearBottom.current = true;
+        patch(instanceId, { cwd: result.cwd });
+        if (result.conversationId && page) {
+          openConversation(instanceId, result.conversationId, page, result.backend);
+        } else {
+          // Rewinding the first message: nothing to copy, just start over.
+          openNewConversation(instanceId, { backend: result.backend });
+        }
+        if (result.prefill != null) patch(instanceId, { draft: result.prefill });
+      } catch (e) {
+        setRewind({
+          sessionId,
+          messageId,
+          pending: false,
+          error: e instanceof Error ? e.message : 'The conversation could not be rewound.',
+        });
+      } finally {
+        rewindBusyRef.current = false;
+      }
+    },
+    [active.id, active.sessionId, openConversation, openNewConversation, patch, stateRef],
+  );
+
+  const rewindHere = rewind && rewind.sessionId === active.sessionId ? rewind : null;
+  const rewindBusy = rewindHere?.pending === true;
+
   if (!active.cwd) {
     return (
       <div className="flex h-full items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground">
@@ -292,7 +383,15 @@ export default function ChatView() {
           ) : (
             <LatestToolProvider messages={active.messages}>
               {active.messages.map((m) => (
-                <MessageRow key={m.id} message={m} />
+                <MessageRow
+                  key={m.id}
+                  message={m}
+                  canRewind={rewindableIds.has(m.id)}
+                  rewindPending={rewindHere?.messageId === m.id && rewindHere.pending}
+                  rewindError={rewindHere?.messageId === m.id ? rewindHere.error : null}
+                  rewindBusy={rewindBusy}
+                  onRewind={onRewind}
+                />
               ))}
             </LatestToolProvider>
           )}
@@ -374,16 +473,64 @@ export default function ChatView() {
   );
 }
 
-const MessageRow = memo(function MessageRow({ message }: { message: ChatMessage }) {
-  if (message.role === 'user') return <UserBubble message={message} />;
+type RewindProps = {
+  /** Show the button at all for this message. */
+  canRewind: boolean;
+  /** This message's rewind is in flight. */
+  rewindPending: boolean;
+  /** Why this message's last rewind failed, if it did. */
+  rewindError: string | null;
+  /** Some rewind is in flight — every button waits for it. */
+  rewindBusy: boolean;
+  onRewind: (messageId: string) => void;
+};
+
+const MessageRow = memo(function MessageRow({
+  message,
+  ...rewind
+}: { message: ChatMessage } & RewindProps) {
+  if (message.role === 'user') return <UserBubble message={message} rewind={rewind} />;
   if (message.role === 'system') return <SystemDivider message={message} />;
-  return <AssistantBlocks message={message} />;
+  return <AssistantBlocks message={message} rewind={rewind} />;
 });
 
-function UserBubble({ message }: { message: UserMessage }) {
+/**
+ * "Rewind to here". Hover-revealed like the sidebar's row actions, always
+ * visible on touch screens, and pinned visible while its own fork is running.
+ */
+function RewindButton({ messageId, rewind }: { messageId: string; rewind: RewindProps }) {
+  return (
+    <button
+      type="button"
+      onClick={() => rewind.onRewind(messageId)}
+      disabled={rewind.rewindBusy}
+      title="Rewind to here — opens a copy, original kept"
+      aria-label="Rewind to here — opens a copy, original kept"
+      className={cn(
+        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 opacity-0 transition-all hover:bg-foreground/10 hover:text-blue-400 focus-visible:opacity-100 group-hover/msg:opacity-100 touch:opacity-100 disabled:cursor-not-allowed',
+        rewind.rewindPending && 'text-blue-400 opacity-100',
+        rewind.rewindBusy && !rewind.rewindPending && 'opacity-0 group-hover/msg:opacity-30 touch:opacity-30',
+      )}
+    >
+      {rewind.rewindPending ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <RotateCcw className="h-3.5 w-3.5" />
+      )}
+    </button>
+  );
+}
+
+function RewindError({ text }: { text: string | null }) {
+  if (!text) return null;
+  return <div className="max-w-full text-[11px] leading-snug text-red-300">{text}</div>;
+}
+
+function UserBubble({ message, rewind }: { message: UserMessage; rewind: RewindProps }) {
   const hasImages = message.images && message.images.length > 0;
   return (
-    <div className="flex w-full justify-end">
+    <div className="group/msg flex w-full items-end justify-end gap-1.5">
+      {rewind.canRewind && <RewindButton messageId={message.id} rewind={rewind} />}
       <div className="flex max-w-[82%] flex-col items-end gap-1.5">
         {hasImages && (
           <div className="flex flex-wrap justify-end gap-1.5">
@@ -407,6 +554,7 @@ function UserBubble({ message }: { message: UserMessage }) {
             {message.text}
           </div>
         )}
+        <RewindError text={rewind.rewindError} />
       </div>
     </div>
   );
@@ -427,7 +575,13 @@ function SystemDivider({ message }: { message: SystemMessage }) {
   );
 }
 
-function AssistantBlocks({ message }: { message: AssistantMessage }) {
+function AssistantBlocks({
+  message,
+  rewind,
+}: {
+  message: AssistantMessage;
+  rewind: RewindProps;
+}) {
   if (message.blocks.length === 0 && message.streaming) {
     return (
       <div className="flex w-full justify-start">
@@ -440,11 +594,17 @@ function AssistantBlocks({ message }: { message: AssistantMessage }) {
   }
 
   return (
-    <div className="flex w-full justify-start">
+    <div className="group/msg flex w-full justify-start">
       <div className="flex w-full max-w-full flex-col gap-2">
         {message.blocks.map((block) => (
           <BlockRenderer key={block.id} block={block} />
         ))}
+        {rewind.canRewind && (
+          <div className="-mt-1 flex items-center gap-2">
+            <RewindButton messageId={message.id} rewind={rewind} />
+            <RewindError text={rewind.rewindError} />
+          </div>
+        )}
       </div>
     </div>
   );

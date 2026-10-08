@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import readline from 'node:readline';
+import { randomUUID } from 'node:crypto';
 import type { ChatMessage, ContentBlock, ImageAttachmentBlock } from '@/lib/types';
 import { isSshCwd } from '@/lib/cwd';
 import { DEFAULT_BACKEND, isValidBackend, type ChatBackend } from '@/lib/backends';
@@ -33,6 +35,11 @@ export type StoredMessage = {
   createdAt: number;
   blocks: ContentBlock[];
   text?: string;
+  /**
+   * Assistant rows only: uuid of the last top-level CLI transcript entry the
+   * turn produced — the point "Rewind to here" forks at. Null when unknown.
+   */
+  sdkUuid?: string | null;
 };
 
 function encodeCwdToProjectFolder(cwd: string): string {
@@ -353,6 +360,274 @@ export function moveConversation(
   return { ok: true, from: fromCwd, to: toCwd, transcriptMoved };
 }
 
+export type ForkConversationResult =
+  | {
+      ok: true;
+      /**
+       * The new conversation. Null when there was nothing before the point to
+       * keep — rewinding the very first message — so the caller should simply
+       * start a fresh conversation in `cwd` with `prefill` in the composer.
+       */
+      conversationId: string | null;
+      cwd: string;
+      backend: ChatBackend;
+      /** Set when rewinding to a user message: its text, to edit and resend. */
+      prefill?: string;
+    }
+  | {
+      ok: false;
+      reason: 'not-found' | 'not-sdk' | 'not-rewindable' | 'fork-failed';
+      detail?: string;
+    };
+
+const COPIED_ID_PREFIX: Record<string, string> = { user: 'user', assistant: 'asst', system: 'sys' };
+
+/**
+ * "Rewind to here": copy a conversation up to one of its messages into a NEW
+ * conversation, leaving the original exactly as it was.
+ *
+ * Rewinding to an assistant message keeps everything through that answer.
+ * Rewinding to a user message keeps everything before it and hands its text
+ * back as `prefill`, so it can be edited and sent again — which is why its fork
+ * point is the previous turn's, not its own.
+ *
+ * The CLI transcript is the half that matters: the new conversation id is a
+ * new CLI session id, and the next turn resumes it. `forkSession` copies the
+ * source transcript up to and including the turn's last chain entry under
+ * fresh entry uuids, so the copy and the original can never collide. The rows
+ * here are the display half, copied with fresh ids and the same seqs.
+ *
+ * Same ordering argument as `moveConversation`: the transcript is written
+ * first and the rows second, in one transaction, and a transaction that fails
+ * deletes the transcript it would have pointed at. The original conversation
+ * is only ever read.
+ */
+export async function forkConversationAt(
+  conversationId: string,
+  messageId: string,
+): Promise<ForkConversationResult> {
+  const db = getDb();
+  const conv = db
+    .prepare<
+      [string],
+      { cwd: string; origin: string; title: string | null; backend: string }
+    >(`SELECT cwd, origin, title, backend FROM conversations WHERE id = ?`)
+    .get(conversationId);
+  if (!conv) return { ok: false, reason: 'not-found' };
+  if (conv.backend !== 'sdk') return { ok: false, reason: 'not-sdk' };
+
+  const target = db
+    .prepare<
+      [string, string],
+      { role: string; seq: number; blocks_json: string; sdk_uuid: string | null }
+    >(
+      `SELECT role, seq, blocks_json, sdk_uuid FROM messages
+        WHERE id = ? AND conversation_id = ?`,
+    )
+    .get(messageId, conversationId);
+  if (!target) return { ok: false, reason: 'not-found' };
+
+  let upToMessageId: string;
+  /** Exclusive upper bound of the seq range copied into the fork. */
+  let endSeq: number;
+  let prefill: string | undefined;
+  if (target.role === 'assistant') {
+    if (!target.sdk_uuid) return { ok: false, reason: 'not-rewindable' };
+    upToMessageId = target.sdk_uuid;
+    // Through this turn, plus any system rows recorded right after it — a
+    // compaction during the turn persists its divider behind the answer.
+    const next = db
+      .prepare<[string, number], { seq: number | null }>(
+        `SELECT MIN(seq) AS seq FROM messages
+          WHERE conversation_id = ? AND seq > ? AND role <> 'system'`,
+      )
+      .get(conversationId, target.seq);
+    endSeq = next?.seq ?? Number.MAX_SAFE_INTEGER;
+  } else if (target.role === 'user') {
+    prefill = userTextOf(parseBlocks(target.blocks_json));
+    const prev = db
+      .prepare<[string, number], { sdk_uuid: string | null }>(
+        `SELECT sdk_uuid FROM messages
+          WHERE conversation_id = ? AND role = 'assistant' AND seq < ?
+          ORDER BY seq DESC LIMIT 1`,
+      )
+      .get(conversationId, target.seq);
+    // Nothing came before it, so there is nothing to copy: rewinding the
+    // first message is starting over with the same text.
+    if (!prev) {
+      return { ok: true, conversationId: null, cwd: conv.cwd, backend: 'sdk', prefill };
+    }
+    if (!prev.sdk_uuid) return { ok: false, reason: 'not-rewindable' };
+    upToMessageId = prev.sdk_uuid;
+    endSeq = target.seq;
+  } else {
+    return { ok: false, reason: 'not-rewindable' };
+  }
+
+  const origin = conv.origin === 'ssh' || isSshCwd(conv.cwd) ? 'ssh' : 'local';
+  const sdkCwd = sdkCwdFor(conv.cwd, origin);
+  const title = conv.title ? `${conv.title} (rewind)` : 'Rewind';
+
+  let sdk: typeof import('@anthropic-ai/claude-agent-sdk');
+  let newId: string;
+  try {
+    // Loaded on demand: every route that lists or pages conversations imports
+    // this module, and none of them needs the SDK.
+    sdk = await import('@anthropic-ai/claude-agent-sdk');
+    ({ sessionId: newId } = await sdk.forkSession(conversationId, {
+      dir: sdkCwd,
+      upToMessageId,
+      title,
+    }));
+  } catch (e) {
+    return { ok: false, reason: 'fork-failed', detail: errorText(e) };
+  }
+
+  const copied = db
+    .prepare<[string, number], { id: string; role: string; sdk_uuid: string | null }>(
+      `SELECT id, role, sdk_uuid FROM messages
+        WHERE conversation_id = ? AND seq < ? ORDER BY seq`,
+    )
+    .all(conversationId, endSeq);
+  const wanted = new Set(
+    copied.map((r) => r.sdk_uuid).filter((u): u is string => u != null),
+  );
+  // Copied rows must point at the FORK's entries — the source's uuids do not
+  // exist in it. A row that cannot be mapped is stored without one, which only
+  // costs the copy its own rewind button there.
+  const uuidMap =
+    wanted.size > 0
+      ? await mapForkedUuids(sdk, conversationId, newId, sdkCwd, wanted)
+      : new Map<string, string>();
+
+  const now = Date.now();
+  try {
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO conversations (id, cwd, title, created_at, updated_at, origin, ephemeral, backend)
+         VALUES (?, ?, ?, ?, ?, ?, 0, 'sdk')`,
+      ).run(newId, conv.cwd, title, now, now, origin);
+      // Copied in SQL so the blocks never round-trip through JS — a long
+      // conversation's history is easily tens of megabytes.
+      const copy = db.prepare(
+        `INSERT INTO messages (id, conversation_id, role, seq, created_at, blocks_json, sdk_uuid)
+         SELECT ?, ?, role, seq, created_at, blocks_json, ? FROM messages WHERE id = ?`,
+      );
+      for (const r of copied) {
+        copy.run(
+          `${COPIED_ID_PREFIX[r.role] ?? 'msg'}_${randomUUID()}`,
+          newId,
+          r.sdk_uuid ? (uuidMap.get(r.sdk_uuid) ?? null) : null,
+          r.id,
+        );
+      }
+      db.prepare(
+        `INSERT INTO conversation_notes (conversation_id, content, updated_at)
+         SELECT ?, content, ? FROM conversation_notes WHERE conversation_id = ?`,
+      ).run(newId, now, conversationId);
+      setWorkspaceLastConversation(conv.cwd, newId, now);
+    })();
+  } catch (e) {
+    // No row points at the new transcript, so it must not outlive this call —
+    // it would surface in the folder as an unexplained external session.
+    try {
+      await sdk.deleteSession(newId, { dir: sdkCwd });
+    } catch {
+      /* fall through to the direct unlink */
+    }
+    try {
+      fs.rmSync(sdkTranscriptPath(sdkCwd, newId), { force: true });
+    } catch {
+      /* nothing further to try */
+    }
+    return { ok: false, reason: 'fork-failed', detail: errorText(e) };
+  }
+
+  return { ok: true, conversationId: newId, cwd: conv.cwd, backend: 'sdk', prefill };
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Map source transcript uuids to their copies in a fork, for the `wanted` ones.
+ *
+ * First choice is the fork's own record: every entry `forkSession` writes
+ * carries `forkedFrom: { sessionId, messageUuid }`, which is exact. That field
+ * is not part of the SDK's typed surface, though, and the file is located with
+ * this module's own path encoding, so when that yields nothing the fallback
+ * matches the two chains from `getSessionMessages` by content — the fork
+ * copies each entry's message verbatim. Only keys that are unique on both
+ * sides are used; matching by position does not work, because the fork can
+ * list parallel tool results in a different order. Anything unresolved is
+ * simply left out of the map.
+ */
+async function mapForkedUuids(
+  sdk: typeof import('@anthropic-ai/claude-agent-sdk'),
+  sourceId: string,
+  forkId: string,
+  sdkCwd: string,
+  wanted: Set<string>,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const lines = readline.createInterface({
+      input: fs.createReadStream(sdkTranscriptPath(sdkCwd, forkId)),
+      crlfDelay: Infinity,
+    });
+    for await (const line of lines) {
+      if (!line.includes('"forkedFrom"')) continue;
+      try {
+        const entry = JSON.parse(line) as {
+          uuid?: unknown;
+          forkedFrom?: { sessionId?: unknown; messageUuid?: unknown };
+        };
+        const from = entry.forkedFrom?.messageUuid;
+        if (
+          entry.forkedFrom?.sessionId === sourceId &&
+          typeof from === 'string' &&
+          wanted.has(from) &&
+          typeof entry.uuid === 'string'
+        ) {
+          map.set(from, entry.uuid);
+        }
+      } catch {
+        /* a line that does not parse cannot be mapped */
+      }
+    }
+  } catch {
+    map.clear();
+  }
+  if (map.size > 0) return map;
+
+  try {
+    const [source, fork] = await Promise.all([
+      sdk.getSessionMessages(sourceId, { dir: sdkCwd }),
+      sdk.getSessionMessages(forkId, { dir: sdkCwd }),
+    ]);
+    const keyOf = (m: { type: string; message: unknown }) =>
+      `${m.type}\u0000${JSON.stringify(m.message)}`;
+    const index = (msgs: { type: string; uuid: string; message: unknown }[]) => {
+      const out = new Map<string, string | null>();
+      for (const m of msgs) {
+        const k = keyOf(m);
+        out.set(k, out.has(k) ? null : m.uuid);
+      }
+      return out;
+    };
+    const forkByKey = index(fork);
+    for (const [k, uuid] of index(source)) {
+      if (uuid == null || !wanted.has(uuid)) continue;
+      const copy = forkByKey.get(k);
+      if (copy) map.set(uuid, copy);
+    }
+  } catch {
+    map.clear();
+  }
+  return map;
+}
+
 /**
  * Throwaways untouched this long are swept.
  *
@@ -409,13 +684,21 @@ export function upsertMessage(
     seq: number;
     createdAt: number;
     blocks: ContentBlock[];
+    /**
+     * Fork point for "Rewind to here" (see StoredMessage.sdkUuid). Omitting it
+     * — or passing null — never clears a value already stored: most writes of
+     * an assistant row happen before its turn has produced any chain entry.
+     */
+    sdkUuid?: string | null;
   },
 ): void {
   const db = getDb();
   db.prepare(
-    `INSERT INTO messages (id, conversation_id, role, seq, created_at, blocks_json)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET blocks_json = excluded.blocks_json`,
+    `INSERT INTO messages (id, conversation_id, role, seq, created_at, blocks_json, sdk_uuid)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       blocks_json = excluded.blocks_json,
+       sdk_uuid    = COALESCE(excluded.sdk_uuid, messages.sdk_uuid)`,
   ).run(
     message.id,
     message.conversationId,
@@ -423,6 +706,7 @@ export function upsertMessage(
     message.seq,
     message.createdAt,
     JSON.stringify(message.blocks),
+    message.sdkUuid ?? null,
   );
 }
 
@@ -526,15 +810,46 @@ type MessageRow = {
   seq: number;
   created_at: number;
   blocks_json: string;
+  sdk_uuid: string | null;
+  /**
+   * User rows only: whether the nearest assistant row BEFORE this one carries
+   * an sdk_uuid (1/0), or NULL when there is no earlier assistant row at all.
+   */
+  prev_has_uuid: number | null;
 };
 
-function rowToChatMessage(row: MessageRow): ChatMessage {
-  let blocks: ContentBlock[] = [];
+function parseBlocks(json: string): ContentBlock[] {
   try {
-    blocks = JSON.parse(row.blocks_json) as ContentBlock[];
+    return JSON.parse(json) as ContentBlock[];
   } catch {
-    blocks = [];
+    return [];
   }
+}
+
+/** The typed text of a user message — its text blocks, joined. */
+function userTextOf(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
+    .map((b) => b.text)
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * Mirrors what `forkConversationAt` will accept, so the button only shows where
+ * the fork can actually be made. An assistant row needs its own fork point; a
+ * user row needs the previous turn's — or no previous turn at all, in which
+ * case rewinding is just "start over with this text".
+ */
+function isRewindable(row: MessageRow, sdkBackend: boolean): boolean {
+  if (!sdkBackend) return false;
+  if (row.role === 'assistant') return row.sdk_uuid != null;
+  if (row.role === 'user') return row.prev_has_uuid == null || row.prev_has_uuid === 1;
+  return false;
+}
+
+function rowToChatMessage(row: MessageRow, rewindable: boolean): ChatMessage {
+  let blocks = parseBlocks(row.blocks_json);
   // Anything we hydrate from disk is finalized — clear streaming flags so a
   // mid-stream crash doesn't leave a forever-pending tool/text/thinking
   // block in the UI.
@@ -545,11 +860,7 @@ function rowToChatMessage(row: MessageRow): ChatMessage {
     return b;
   });
   if (row.role === 'user') {
-    const text = blocks
-      .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
-      .map((b) => b.text)
-      .filter(Boolean)
-      .join('\n');
+    const text = userTextOf(blocks);
     const images = blocks.filter(
       (b): b is ImageAttachmentBlock => b.type === 'image',
     );
@@ -559,12 +870,13 @@ function rowToChatMessage(row: MessageRow): ChatMessage {
       text,
       images: images.length > 0 ? images : undefined,
       createdAt: row.created_at,
+      rewindable,
     };
   }
   if (row.role === 'system') {
     return { id: row.id, role: 'system', blocks, createdAt: row.created_at };
   }
-  return { id: row.id, role: 'assistant', blocks, createdAt: row.created_at };
+  return { id: row.id, role: 'assistant', blocks, createdAt: row.created_at, rewindable };
 }
 
 export type MessagePage = {
@@ -582,28 +894,40 @@ export function getMessagesPage(
   const cap = Math.max(1, Math.min(limit, 200));
   const fetchLimit = cap + 1;
 
+  // The previous turn's fork point may sit outside this page, so it is looked
+  // up per user row rather than inferred from the rows fetched — an index seek
+  // backwards from the row's own seq, which normally stops one row up.
+  const columns = `m.id, m.role, m.seq, m.created_at, m.blocks_json, m.sdk_uuid,
+              CASE WHEN m.role = 'user' THEN (
+                SELECT p.sdk_uuid IS NOT NULL FROM messages p
+                 WHERE p.conversation_id = m.conversation_id
+                   AND p.role = 'assistant' AND p.seq < m.seq
+                 ORDER BY p.seq DESC LIMIT 1
+              ) END AS prev_has_uuid`;
   const rows =
     beforeSeq != null
       ? db
           .prepare<[string, number, number], MessageRow>(
-            `SELECT id, role, seq, created_at, blocks_json
-               FROM messages
-              WHERE conversation_id = ? AND seq < ?
-              ORDER BY seq DESC LIMIT ?`,
+            `SELECT ${columns}
+               FROM messages m
+              WHERE m.conversation_id = ? AND m.seq < ?
+              ORDER BY m.seq DESC LIMIT ?`,
           )
           .all(conversationId, beforeSeq, fetchLimit)
       : db
           .prepare<[string, number], MessageRow>(
-            `SELECT id, role, seq, created_at, blocks_json
-               FROM messages
-              WHERE conversation_id = ?
-              ORDER BY seq DESC LIMIT ?`,
+            `SELECT ${columns}
+               FROM messages m
+              WHERE m.conversation_id = ?
+              ORDER BY m.seq DESC LIMIT ?`,
           )
           .all(conversationId, fetchLimit);
 
+  // OpenCode keeps its own session store, which has nothing to fork.
+  const sdkBackend = getConversationBackend(conversationId) === 'sdk';
   const hasMoreOlder = rows.length > cap;
   const trimmed = (hasMoreOlder ? rows.slice(0, cap) : rows).reverse();
-  const messages = trimmed.map(rowToChatMessage);
+  const messages = trimmed.map((row) => rowToChatMessage(row, isRewindable(row, sdkBackend)));
   const oldestSeq = trimmed.length > 0 ? trimmed[0].seq : null;
   return { messages, oldestSeq, hasMoreOlder };
 }

@@ -153,6 +153,13 @@ export type UserMessage = {
   text: string;
   images?: ImageAttachmentBlock[];
   createdAt: number;
+  /**
+   * Whether "Rewind to here" can fork at this message. Set by the server on
+   * stored messages; absent on messages created live during a stream, which
+   * count as rewindable once their turn is over (the server decides for real
+   * when the fork is requested).
+   */
+  rewindable?: boolean;
 };
 
 export type AssistantMessage = {
@@ -161,6 +168,8 @@ export type AssistantMessage = {
   blocks: ContentBlock[];
   createdAt: number;
   streaming?: boolean;
+  /** See UserMessage.rewindable. */
+  rewindable?: boolean;
 };
 
 export type SystemMessage = {
