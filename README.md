@@ -57,7 +57,7 @@ Then open the app and **set your system prompt** (scroll icon, top bar) — the 
 
 ### The password gate
 
-**Everything is behind a password**, with no exception for loopback. That is deliberate: this app spawns shells, reads and writes the filesystem, and SSHes to other machines as the user running the server, so an unauthenticated request is a remote root shell. And a "trust localhost" shortcut would be worse than useless — `tailscale serve` terminates TLS and forwards to `127.0.0.1`, so tunnelled traffic is indistinguishable from genuinely local traffic at the socket level.
+**Everything is behind a password**, except a request made directly to `http://localhost:PORT` / `127.0.0.1` (the server listens on 127.0.0.1 only). That exemption keys off proxy headers and the Host header, never the source IP (see `isLocalRequest` in `src/server/auth.ts`), because the old reasoning still applies: That is deliberate: this app spawns shells, reads and writes the filesystem, and SSHes to other machines as the user running the server, so an unauthenticated request is a remote root shell. And a "trust localhost" shortcut would be worse than useless — `tailscale serve` terminates TLS and forwards to `127.0.0.1`, so tunnelled traffic is indistinguishable from genuinely local traffic at the socket level.
 
 Set the password one of two ways:
 

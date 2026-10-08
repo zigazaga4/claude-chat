@@ -151,3 +151,49 @@ export function requestIsHttps(headers: Headers, url: string): boolean {
   if (forwarded) return forwarded.split(',')[0].trim() === 'https';
   return url.startsWith('https://');
 }
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const LOOPBACK_IPS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function hostnameOf(hostHeader: string): string {
+  const h = hostHeader.trim().toLowerCase();
+  return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0];
+}
+
+/**
+ * True only for a request made directly to this machine's loopback address,
+ * typed into a browser as localhost / 127.0.0.1 / [::1].
+ *
+ * Tunnelled traffic (Tailscale serve / Funnel) also reaches the socket from
+ * 127.0.0.1, so the socket cannot tell the two apart. What does differ:
+ *   - the tunnel always records the real client in X-Forwarded-For, appending
+ *     to anything the client sent, so the chain ends in a non-loopback address.
+ *     Next.js fills the header with the socket address (loopback) when the
+ *     request had none, so a direct request shows loopback only.
+ *   - the tunnel marks the request X-Forwarded-Proto: https.
+ *   - the Host header must be a loopback name, which also defeats DNS rebinding.
+ * Any one failing means "not local" and the password applies. The server also
+ * listens on 127.0.0.1 only (scripts/start.sh), so no other LAN machine can
+ * reach it and forge these headers.
+ */
+export function isLocalRequest(headers: Headers): boolean {
+  const host = headers.get('host');
+  if (!host || !LOOPBACK_HOSTS.has(hostnameOf(host))) return false;
+
+  const fwdHost = headers.get('x-forwarded-host');
+  if (fwdHost && !LOOPBACK_HOSTS.has(hostnameOf(fwdHost))) return false;
+
+  const proto = headers.get('x-forwarded-proto');
+  if (proto && proto.split(',').some((p) => p.trim().toLowerCase() === 'https')) return false;
+
+  const chain = headers.get('x-forwarded-for');
+  if (chain && !chain.split(',').every((ip) => LOOPBACK_IPS.has(ip.trim().toLowerCase()))) {
+    return false;
+  }
+
+  for (const name of ['forwarded', 'via', 'x-real-ip', 'cf-connecting-ip']) {
+    if (headers.has(name)) return false;
+  }
+  for (const name of headers.keys()) if (name.startsWith('tailscale-')) return false;
+  return true;
+}

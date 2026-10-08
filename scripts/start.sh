@@ -89,4 +89,4 @@ fi
 #
 # `.bin/next` is a symlink to this same file with a `#!/usr/bin/env node`
 # shebang, so invoking node explicitly changes nothing but the flags.
-exec node --max-old-space-size=1536 node_modules/next/dist/bin/next start -p "$PORT"
+exec node --max-old-space-size=1536 node_modules/next/dist/bin/next start -H 127.0.0.1 -p "$PORT"

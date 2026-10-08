@@ -9,14 +9,14 @@
  * Deliberately not doing here:
  *   - No source-IP exemption. `tailscale serve` terminates TLS and forwards to
  *     127.0.0.1, so tailnet traffic and genuinely local traffic look identical
- *     at the socket. "Trust loopback" would exempt exactly the requests the
- *     gate is for.
+ *     at the socket. The local bypass therefore keys off the absence of proxy
+ *     headers plus a loopback Host header (isLocalRequest), never the IP.
  *   - No database or filesystem lookups per request. Session validity is a
  *     signature check over the cookie itself.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { AUTH_REQUIRED_HEADER, SESSION_COOKIE, verifySession } from '@/server/auth';
+import { AUTH_REQUIRED_HEADER, SESSION_COOKIE, isLocalRequest, verifySession } from '@/server/auth';
 
 export const config = {
   matcher: [
@@ -74,7 +74,11 @@ export function proxy(request: NextRequest) {
   // The login endpoints have to stay open or there is no way to ever get in.
   if (pathname.startsWith('/api/auth/')) return harden(NextResponse.next(), isHttps);
 
-  const authed = verifySession(request.cookies.get(SESSION_COOKIE)?.value);
+  // Direct localhost access never needs the password; see isLocalRequest for
+  // why this is safe even though the Funnel tunnel also lands on 127.0.0.1.
+  const authed =
+    isLocalRequest(request.headers) ||
+    verifySession(request.cookies.get(SESSION_COOKIE)?.value);
 
   if (pathname === '/login') {
     // Already in — no reason to show the form again.
