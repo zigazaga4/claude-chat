@@ -17,7 +17,7 @@
  * and the API route.
  */
 
-import { getProvider, type ModelId } from './models';
+import { isClaudeModel, type ModelId } from './models';
 
 export type ChatBackend = 'sdk' | 'opencode';
 
@@ -64,10 +64,15 @@ export function getBackendInfo(id: ChatBackend): BackendInfo {
  * Anthropic blocked subscription credentials in third-party harnesses in April
  * 2026, and routing Claude through OpenCode on a pay-per-token key is not what
  * anyone picking this app wants.
+ *
+ * Note the test is `isClaudeModel`, not `getProvider`: Claude billed through
+ * OpenRouter reports provider 'openrouter' and would otherwise be offered on
+ * OpenCode, which is a door this app deliberately does not open. Whoever pays
+ * for the tokens, a Claude conversation runs on the harness built for Claude.
  */
 export function supportsBackend(model: ModelId, backend: ChatBackend): boolean {
   if (backend === 'sdk') return true;
-  return getProvider(model) !== 'anthropic';
+  return !isClaudeModel(model);
 }
 
 /** Models runnable on `backend`, for filtering the model picker. */
@@ -83,8 +88,10 @@ export function modelsForBackend<T extends { id: ModelId }>(
  *
  * Claude models can only run on the Agent SDK, so they pin to it. Everything
  * else defaults to OpenCode, where it reaches its provider directly instead of
- * through a translation layer.
+ * through a translation layer. Derived from `supportsBackend` rather than
+ * restating its rule, so a model can never default to a backend that would
+ * refuse it.
  */
 export function defaultBackendForModel(model: ModelId): ChatBackend {
-  return getProvider(model) === 'anthropic' ? 'sdk' : 'opencode';
+  return supportsBackend(model, 'opencode') ? 'opencode' : 'sdk';
 }

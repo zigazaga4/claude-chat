@@ -51,6 +51,7 @@ import {
   getDefaultEffort,
   getModelInfo,
   getProvider,
+  isClaudeModel,
   isValidEffort,
   isValidModelId,
   supportsEffortLadder,
@@ -123,12 +124,20 @@ function thinkingForModel(model: ModelId): SdkThinking {
     // off rather than shipped as undocumented noise.
     return { type: 'enabled' };
   }
-  if (provider === 'openrouter') {
+  if (provider === 'openrouter' && !isClaudeModel(model)) {
     // OpenRouter normalises `thinking` onto whichever upstream model serves the
     // request, and that upstream is not fixed — the budget is the one portable
     // way to ask for a comparable amount of reasoning across hosts.
     return { type: 'enabled', budgetTokens: 16_000 };
   }
+  // Claude is exempted from that branch by MODEL rather than by provider,
+  // because it is exempted by nature: OpenRouter's endpoint list for a Claude id
+  // is Anthropic and the four clouds that serve Anthropic's own API, so the
+  // upstream IS fixed in the only way that matters here. It takes adaptive
+  // thinking, which is both the model's documented mode and the safe one — the
+  // budget form is on borrowed time upstream (Opus 5.5 already answers
+  // `budget_tokens` with a 400), and routing the same request through a
+  // marketplace should not be the thing that changes its shape.
   // 'summarized' display matches what the route hard-coded before this change.
   return getModelInfo(model).thinkingType === 'adaptive'
     ? { type: 'adaptive', display: 'summarized' }

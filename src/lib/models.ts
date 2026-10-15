@@ -5,10 +5,12 @@
  * can import it without dragging in any React or browser-only code.
  *
  * Naming convention matches Anthropic's documented model IDs. Only CURRENT
- * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5. Every
- * superseded id (Fable 5, Opus 5/4.8/4.7, Sonnet 5/4.6, Haiku 4.5) was dropped
- * from the picker and lives on only in `RETIRED_MODEL_IDS`, which re-points
- * persisted conversations at its successor. `claude-haiku-5-5` is the floor;
+ * Claude tiers are listed — Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — with
+ * Haiku 5.5 carrying a second entry for the same model billed through
+ * OpenRouter, the way the DeepSeek, GLM and Kimi entries each have a second
+ * door. Every superseded id (Fable 5, Opus 5/4.8/4.7, Sonnet 5/4.6, Haiku 4.5)
+ * was dropped from the picker and lives on only in `RETIRED_MODEL_IDS`, which
+ * re-points persisted conversations at its successor. `claude-haiku-5-5` is the floor;
  * the Mythos-class flagship `claude-fable-5-1` (released 2026-08-28) dashes its
  * point release, the same way the Opus, Sonnet and Haiku tiers always have. The
  * `model` option is a free-form string the CLI resolves, so no SDK version
@@ -27,6 +29,7 @@ export type ModelId =
   | 'claude-opus-5-5'
   | 'claude-sonnet-5-5'
   | 'claude-haiku-5-5'
+  | 'anthropic/claude-haiku-5.5'
   | 'deepseek-v4-pro'
   | 'deepseek-flash'
   | 'deepseek/deepseek-v4.1-flash'
@@ -70,6 +73,18 @@ export type ModelInfo = {
   /** Serving API. Omitted means 'anthropic'. */
   provider?: ModelProvider;
   /**
+   * Set on every Anthropic model, including the ones a marketplace resells.
+   *
+   * Claude is Claude no matter whose balance pays for it, and three decisions
+   * elsewhere key off that rather than off `provider` — which engine may run it
+   * (see `supportsBackend`), whether `thinking` is passed through as adaptive or
+   * translated into the portable budget form a third-party host needs (see
+   * `thinkingForModel`), and whether the effort ladder is sent at all (see
+   * `supportsEffortLadder`). Marketplace routing changes the billing, not any of
+   * those.
+   */
+  claude?: boolean;
+  /**
    * Model string actually sent to the API, when it differs from `id`. Used to
    * carry OpenRouter's routing suffixes (`:nitro` picks the highest-throughput
    * provider) without leaking them into the id the UI and stored preferences
@@ -110,6 +125,7 @@ export const MODELS: ModelInfo[] = [
     id: 'claude-fable-5-1',
     label: 'Claude Fable 5.1',
     shortLabel: 'Fable 5.1',
+    claude: true,
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -124,6 +140,7 @@ export const MODELS: ModelInfo[] = [
     id: 'claude-opus-5-5',
     label: 'Claude Opus 5.5',
     shortLabel: 'Opus 5.5',
+    claude: true,
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -134,6 +151,7 @@ export const MODELS: ModelInfo[] = [
     id: 'claude-sonnet-5-5',
     label: 'Claude Sonnet 5.5',
     shortLabel: 'Sonnet 5.5',
+    claude: true,
     thinkingType: 'adaptive',
     defaultEffort: 'high',
   },
@@ -148,8 +166,45 @@ export const MODELS: ModelInfo[] = [
     id: 'claude-haiku-5-5',
     label: 'Claude Haiku 5.5',
     shortLabel: 'Haiku 5.5',
+    claude: true,
     thinkingType: 'adaptive',
     defaultEffort: 'high',
+  },
+  {
+    // The same Haiku 5.5 as the first-party entry above, billed through the
+    // OpenRouter balance instead of an Anthropic account — the same second-door
+    // shape as the DeepSeek and GLM Flash entries below, and reached the same
+    // way, over OpenRouter's Anthropic-compatible `/api/v1/messages`.
+    //
+    // No routing preset here, unlike those two, and the difference is worth
+    // stating because it looks like an oversight otherwise. A preset is needed
+    // when a model's fleet includes degraded weights, which is a property of
+    // open-weight models: DeepSeek and GLM are re-quantised by each host, so
+    // the cheap ones serve fp4. Claude has no open weights to re-quantise —
+    // OpenRouter's endpoint list for this id is Anthropic, Claude Platform on
+    // AWS, Amazon Bedrock, Google (Vertex) and Azure, every one of them serving
+    // Anthropic's own weights and pricing within a cent of each other
+    // ($0.10–0.11 / $0.50–0.55 per Mtok, checked 2026-10-15) — so there is no
+    // cheap-degraded tier to route around and the bare slug picks on price,
+    // uptime and throughput as intended. (`:batch`, the async
+    // half-price variant, is a separate id and is not a chat endpoint.)
+    //
+    // Live-verified 2026-10-15 against that endpoint: adaptive thinking,
+    // `effort` up to max, streaming, and a tool_use round trip all accepted,
+    // served by "Claude Platform on AWS", and the reply carries an Anthropic
+    // `msg_…` id — which is what the transcript repair keys on when resuming.
+    //
+    // It stays Claude rather than becoming "an OpenRouter model" — see
+    // `ModelInfo.claude`: it runs on the Agent SDK, keeps adaptive thinking, and
+    // accepts the effort ladder, exactly like the entry above.
+    id: 'anthropic/claude-haiku-5.5',
+    label: 'Claude Haiku 5.5 (OpenRouter)',
+    shortLabel: 'Haiku 5.5 (OR)',
+    claude: true,
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+    provider: 'openrouter',
+    contextWindow: 1_048_576,
   },
   {
     // DeepSeek's premium tier, served over their Anthropic-compatible
@@ -437,6 +492,20 @@ export function getProvider(id: ModelId): ModelProvider {
 }
 
 /**
+ * Whether the model is Claude — Anthropic's weights, whoever is billing for
+ * them.
+ *
+ * Distinct from `getProvider`, and the distinction is the whole point: a Claude
+ * id reached through OpenRouter has provider 'openrouter' (it dials a different
+ * endpoint with a different credential) while still being the same model on the
+ * same API, and the behaviours that follow from *that* must not follow the
+ * billing. See `ModelInfo.claude`.
+ */
+export function isClaudeModel(id: ModelId): boolean {
+  return getModelInfo(id).claude === true;
+}
+
+/**
  * Context window this app assumes for a model whose registry entry does not
  * state one. Most models here are 1M; the ones that differ say so.
  */
@@ -471,13 +540,18 @@ export function modelEnvSuffix(id: ModelId): string {
 }
 
 /**
- * Whether a model accepts Anthropic's effort ladder. DeepSeek exposes the same
- * idea under a different parameter name (`reasoning_effort`) which the CLI
- * never emits, so for those models the ladder is omitted rather than sent
- * under a name the endpoint does not read.
+ * Whether a model accepts Anthropic's effort ladder.
+ *
+ * Claude does on every route — including the OpenRouter one, verified live
+ * 2026-10-15 (`effort: "max"` alongside adaptive thinking came back 200), since
+ * OpenRouter's Anthropic-compatible endpoint forwards the field to an endpoint
+ * that is genuinely Anthropic's. Nobody else here does: DeepSeek and Z.AI
+ * expose the same idea under a different parameter name (`reasoning_effort`)
+ * which the CLI never emits, so for those models the ladder is omitted rather
+ * than sent under a name the endpoint does not read.
  */
 export function supportsEffortLadder(id: ModelId): boolean {
-  return getProvider(id) === 'anthropic';
+  return isClaudeModel(id);
 }
 
 export function isValidEffort(id: string): id is EffortLevel {

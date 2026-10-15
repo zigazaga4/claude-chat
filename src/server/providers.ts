@@ -252,8 +252,10 @@ export function buildProviderEnv(model: ModelId, base: Env): Env {
   // while the app's meter (which reads OUR registry) honestly reports a
   // fifth of the window. CLAUDE_CODE_MAX_CONTEXT_TOKENS is the CLI's own
   // override for exactly this case, honored only for ids that don't start
-  // with "claude-" — which is every model that reaches this branch, and
-  // none that don't.
+  // with "claude-" — which is every model that reaches this branch, and none
+  // that don't. Claude billed through OpenRouter counts: its id there is
+  // `anthropic/claude-haiku-5.5`, which the CLI's registry doesn't list either,
+  // and `anthropic/` is not the prefix the exclusion is looking for.
   env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(getContextWindow(model));
   return env;
 }

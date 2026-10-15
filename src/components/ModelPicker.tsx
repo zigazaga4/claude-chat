@@ -34,6 +34,15 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15',
     dot: 'bg-indigo-400',
   },
+  // The same Haiku, billed through OpenRouter — one step along from indigo so
+  // the two Haiku doors read as siblings, as the DeepSeek, GLM and Kimi pairs
+  // do. Violet is the nearest free hue to indigo; its distance from Opus's
+  // purple is smaller than the roster would like, which is why the labels
+  // ("Haiku 5.5" vs "Haiku 5.5 (OR)") are the thing that tells them apart.
+  'anthropic/claude-haiku-5.5': {
+    btn: 'border-violet-500/40 bg-violet-500/10 text-violet-200 hover:bg-violet-500/15',
+    dot: 'bg-violet-400',
+  },
   'deepseek-v4-pro': {
     btn: 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/15',
     dot: 'bg-blue-400',
