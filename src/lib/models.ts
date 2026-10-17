@@ -254,11 +254,30 @@ export const MODELS: ModelInfo[] = [
     // every host, and OpenRouter's DeepSeek fleet includes fp4 hosts (Relace,
     // Sail Research) whose 50% discount buys degraded weights, plus a spread of
     // undeclared-quantisation hosts. The preset allows only declared
-    // fp8-or-better quantisations (no fp4, no `unknown`) and sorts by price, so
-    // it lands on the cheapest reference-quality host — DeepInfra fp8 at
-    // $0.14/$0.42 per Mtok, verified 2026-09-19 — failing over only to other
-    // fp8 hosts. Same lever as the GLM entry below; the preset lives in the
-    // OpenRouter account behind OPENROUTER_API_KEY.
+    // fp8-or-better quantisations (no fp4, no `unknown`) and sorts by price,
+    // failing over only to other fp8 hosts. Same lever as the GLM entry below;
+    // the preset lives in the OpenRouter account behind OPENROUTER_API_KEY.
+    //
+    // WHICH SNAPSHOT lives in the preset, not in this file. OpenRouter ships
+    // each DeepSeek update as a new dated slug beside the old one, so the id
+    // here stays `deepseek/deepseek-v4.1-flash` and an update is a new preset
+    // VERSION — POST the new model plus the same `provider` block to
+    // /api/v1/presets/deepseek-v4-1-flash-fp8/chat/completions — with no
+    // rebuild and no restart, because the app only ever sends the preset id.
+    // Do NOT put `max_tokens` (or any other request field) in that body: the
+    // writer persists whatever it is sent as the preset's config.
+    //
+    // Currently on `deepseek/deepseek-v4.1-flash-1017` (the 2026-10-17
+    // snapshot; preset version 3, verified through the preset id with tools +
+    // thinking + streaming). Rollback is version 1, `deepseek/deepseek-v4.1-flash`.
+    // That snapshot launched with only five hosts, four of them fp8, so the
+    // filter lands on InferenceNet fp8 ($0.10/$0.50 per Mtok) — a 262k-context
+    // host — and OpenRouter reroutes anything longer to DeepInfra fp8 (1M),
+    // confirmed with a 464k-token prompt. The only price of that is one cold
+    // prompt-cache miss, about 3 cents, when a conversation first crosses 262k.
+    // The first-party `deepseek-flash` entry above floats, and OpenRouter's own
+    // description says this snapshot is served by DeepSeek under that API name,
+    // so both doors are on the same weights.
     id: 'deepseek/deepseek-v4.1-flash',
     wireId: '@preset/deepseek-v4-1-flash-fp8',
     label: 'DeepSeek V4.1 Flash (OpenRouter)',
