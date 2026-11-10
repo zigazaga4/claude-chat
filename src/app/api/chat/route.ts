@@ -65,6 +65,14 @@ import {
   buildSubagentChoiceHook,
 } from '@/lib/subagentChoice';
 import {
+  backgroundHoldMs,
+  describeDuration,
+  holdFloorMs,
+  idleExpiryAction,
+  liveBackgroundTasks,
+  startsMainThreadWork,
+} from '@/lib/inputHold';
+import {
   MissingProviderCredentialError,
   buildProviderEnv,
   sdkWireModelId,
@@ -213,40 +221,10 @@ const SYNTHETIC_TURN_GRACE_MS = 10 * 60_000;
  * both refused. Bounded, and any later `result` re-arms the normal grace.
  */
 const TASK_WAKE_GRACE_MS = 10 * 60_000;
-/**
- * Grace applied while a BACKGROUND TASK (async subagent, backgrounded Bash) is
- * still running.
- *
- * The Agent tool can launch a subagent asynchronously: the tool_result comes
- * back immediately ("Async agent launched successfully") and the parent's turn
- * ends right after, while the agent keeps working in its own context. Closing
- * the input on that `result` tears the CLI down mid-flight, and every tool the
- * agent then calls dies with `Tool permission request failed: AbortError:
- * Stream closed` — because `canUseTool` lives on this very stream. That is
- * exactly why spawning agents "didn't work" here.
- *
- * So while tasks are outstanding the stream is held open on a long grace and
- * only released once the last one reports `task_notification`. Bounded so a
- * task that never settles still frees the stream; Stop cancels it sooner.
- */
-const AGENT_TASK_GRACE_MS = 30 * 60_000;
-
-/**
- * The same idea for a backgrounded shell, but far shorter.
- *
- * A shell is not an agent: it makes no tool calls, so it needs no permission
- * channel and nothing about it requires this stream. The only reason to wait
- * at all is that the shell is a child of the CLI process and dies with it, so
- * a brief hold lets a follow-up message arrive and keep it alive.
- *
- * It must not be the agent grace. A backgrounded server (`python3 -m
- * http.server`, a dev server) never exits, so it never reports completion, so
- * the grace can never be cut short by the task settling — it burns the full
- * duration every single time. At 30 minutes that pinned a ~265 MB CLI process
- * for half an hour after the user had stopped talking, which on a 5.6 GB
- * machine is the difference between paging and not.
- */
-const BACKGROUND_SHELL_GRACE_MS = 90_000;
+// How long the stream is held while BACKGROUND WORK is live (async subagents,
+// backgrounded shells, Monitors) lives in `lib/inputHold.ts`, together with the
+// reasoning: every kind of background work ends by waking a turn that needs the
+// input open, so none of them gets a short grace.
 
 /**
  * Opening words of the tool_result the CLI substitutes when it reaches a tool
@@ -327,6 +305,9 @@ const NO_NESTED_SUBAGENT_HOOKS = {
   ],
   PreToolUse: [
     {
+      // Scoped to the spawning tools: unscoped, EVERY tool call round-trips
+      // through the SDK and dies with the stream. See SUBAGENT_SPAWN_MATCHER.
+      matcher: SUBAGENT_SPAWN_MATCHER,
       hooks: [
         async (input: { tool_name?: string; agent_id?: string }) => {
           if (!input.agent_id || !SUBAGENT_SPAWN_TOOLS.has(input.tool_name ?? '')) {
@@ -1478,14 +1459,44 @@ export async function POST(req: NextRequest) {
        * Background tasks (async subagents / backgrounded shells) started this
        * stream and not yet settled, keyed by the SDK's `task_id`. Non-empty
        * means work is still in flight AFTER the parent turn's `result`, so the
-       * input must stay open — see BACKGROUND_TASK_GRACE_MS.
+       * input must stay open — see `lib/inputHold.ts`.
        */
       const liveTasks = new Set<string>();
       /**
-       * Backgrounded shells, tracked apart from `liveTasks` because they earn a
-       * much shorter hold — see BACKGROUND_SHELL_GRACE_MS.
+       * Backgrounded shells, tracked apart from `liveTasks` because the
+       * registry and the task chips treat them differently. They hold the
+       * stream exactly as agents do: finishing is what wakes the model.
        */
       const liveShellTasks = new Set<string>();
+      /**
+       * The CLI's own list of live background work, replaced wholesale by every
+       * `background_tasks_changed` (see `liveBackgroundTasks`). It is a level,
+       * not a pair of edges, so a missed `task_notification` cannot leave a
+       * stale entry — and it covers work the two sets above never matched,
+       * Monitors above all, which wake the model just as a shell does.
+       */
+      const backgroundTasks = new Map<string, string>();
+      /** Everything that can still wake the model on its own. */
+      const backgroundWork = () =>
+        Math.max(backgroundTasks.size, liveTasks.size + liveShellTasks.size);
+      /**
+       * True from the first main-thread event of a turn until its `result`.
+       * An idle-close timer must never act while this is set: the wake-up grace
+       * is minutes long, a woken turn can run longer, and closing the input
+       * under it is the failure described in `lib/inputHold.ts`.
+       */
+      let turnInFlight = false;
+      /** Stops the CLI and its children outright; assigned once `query()` exists. */
+      let terminateCli = null as (() => void) | null;
+      /**
+       * Who closed the input and when, plus when the last turn ended. Kept only
+       * so the cancellation warning below can say what happened: that bug was
+       * diagnosed from a bare `inputClosed: true`, which says nothing about
+       * WHICH close it was or how far into a turn it landed.
+       */
+      let inputClosedWhy = '';
+      let inputClosedAt = 0;
+      let lastResultAt = 0;
       /**
        * Tool calls that passed `run_in_background: true`.
        *
@@ -1517,6 +1528,8 @@ export async function POST(req: NextRequest) {
       const closeInputNow = () => {
         if (inputClosed) return;
         inputClosed = true;
+        inputClosedWhy = 'stream-teardown';
+        inputClosedAt = Date.now();
         if (closingTimer) {
           clearTimeout(closingTimer);
           closingTimer = null;
@@ -1534,17 +1547,10 @@ export async function POST(req: NextRequest) {
       const scheduleIdleClose = (delayMs: number = POST_TURN_GRACE_MS) => {
         if (inputClosed) return;
         if (inputQueue.length > 0) return;
-        // A subagent outliving the turn keeps the stream open: its tool calls
-        // are permissioned through `canUseTool` on this stream, so closing here
-        // would abort the agent's very next tool use. A backgrounded shell has
-        // no such dependency and only gets a brief hold.
-        const floor =
-          liveTasks.size > 0
-            ? AGENT_TASK_GRACE_MS
-            : liveShellTasks.size > 0
-              ? BACKGROUND_SHELL_GRACE_MS
-              : 0;
-        const delay = Math.max(delayMs, floor);
+        // Background work of any kind — a subagent, a backgrounded shell, a
+        // Monitor — keeps the stream open. Each ends by waking the model, and
+        // the woken turn runs hooks and MCP tools over this very channel.
+        const delay = Math.max(delayMs, holdFloorMs(backgroundWork()));
         if (closingTimer) {
           clearTimeout(closingTimer);
           closingTimer = null;
@@ -1553,8 +1559,44 @@ export async function POST(req: NextRequest) {
           closingTimer = null;
           if (inputClosed) return;
           if (inputQueue.length > 0) return;
+          const action = idleExpiryAction({
+            turnInFlight,
+            backgroundWork: backgroundWork(),
+          });
+          // A turn is running (the CLI started one on its own while this was
+          // waiting). Its `result` re-arms the timer.
+          if (action === 'defer') return;
           inputClosed = true;
+          inputClosedWhy = `idle-timer ${delay}ms${action === 'terminate' ? ' (terminate)' : ''}`;
+          inputClosedAt = Date.now();
           wakeInput();
+          if (action === 'terminate') {
+            // Closing the input would leave a CLI that waits for the task
+            // anyway and then wakes into a turn whose tools are all cancelled.
+            // Stop it properly instead; it was holding the work's children.
+            console.warn(
+              '[chat] background work outlived its hold; stopping the CLI',
+              JSON.stringify({
+                tasks: [...backgroundTasks.values()],
+                session: (activeConversationId ?? sessionId ?? '?').slice(0, 8),
+              }),
+            );
+            send({
+              type: 'error',
+              error:
+                `Background work was still running after ${describeDuration(
+                  backgroundHoldMs(),
+                )} with nothing else happening, so the session was ended and ` +
+                'that work was stopped.',
+            });
+            // This runs in a timer: a throw here would be an uncaught
+            // exception in the server process, not just a failed stream.
+            try {
+              terminateCli?.();
+            } catch (err) {
+              console.warn('[chat] could not stop the CLI after its hold', err);
+            }
+          }
         }, delay);
       };
 
@@ -2006,6 +2048,8 @@ export async function POST(req: NextRequest) {
           },
         });
 
+        terminateCli = () => queryInstance.close();
+
         let sessionEmitted = false;
 
         // ===== Plan-usage meter (the SDK's /usage command) =====
@@ -2085,6 +2129,18 @@ export async function POST(req: NextRequest) {
           // turn's metadata.
           if (needsNewTurn && pendingTurnMetas.length > 0) {
             beginNextTurn();
+          }
+
+          // The CLI can start a turn nobody asked for — a background task
+          // reporting back wakes the model. The moment one begins, the input
+          // has to stay open for it and any timer armed after the last
+          // `result` must stand down; its own `result` re-arms them.
+          if (!turnInFlight && startsMainThreadWork(message as AnyRecord)) {
+            turnInFlight = true;
+            if (closingTimer) {
+              clearTimeout(closingTimer);
+              closingTimer = null;
+            }
           }
 
           // ===== Background task lifecycle (async subagents) =====
@@ -2196,6 +2252,28 @@ export async function POST(req: NextRequest) {
               }
               continue;
             }
+            if (sub === 'background_tasks_changed') {
+              // The authoritative list of live background work (see
+              // `backgroundTasks`). Replaced, never merged.
+              const hadTasks = backgroundTasks.size > 0;
+              backgroundTasks.clear();
+              for (const [id, type] of liveBackgroundTasks(message as AnyRecord)) {
+                backgroundTasks.set(id, type);
+              }
+              // Work started or finished while the model is idle: re-evaluate
+              // the hold now rather than at the next `result`, which may never
+              // come. When the last piece finishes this is also the moment the
+              // woken turn is about to begin, so give it the wake-up grace.
+              // An empty list that was already empty is not that moment.
+              if (!turnInFlight) {
+                if (backgroundTasks.size > 0) {
+                  scheduleIdleClose(POST_TURN_GRACE_MS);
+                } else if (hadTasks && backgroundWork() === 0) {
+                  scheduleIdleClose(TASK_WAKE_GRACE_MS);
+                }
+              }
+              continue;
+            }
             if (sub === 'task_started' && taskId) {
               const rec = message as AnyRecord;
               const subagentType = asString(rec.subagent_type) ?? null;
@@ -2270,6 +2348,7 @@ export async function POST(req: NextRequest) {
             if (sub === 'task_notification' && taskId) {
               liveTasks.delete(taskId);
               liveShellTasks.delete(taskId);
+              backgroundTasks.delete(taskId);
               agentFinished(notebookConversationId(), taskId);
               const rec = message as AnyRecord;
               send({
@@ -2282,7 +2361,7 @@ export async function POST(req: NextRequest) {
               // agent grace, but not all the way to 150 ms: this notification is
               // what wakes the model to read the result, and that turn needs the
               // stream for its own tool calls. See TASK_WAKE_GRACE_MS.
-              if (liveTasks.size === 0 && liveShellTasks.size === 0 && needsNewTurn) {
+              if (backgroundWork() === 0 && !turnInFlight && needsNewTurn) {
                 scheduleIdleClose(TASK_WAKE_GRACE_MS);
               }
               continue;
@@ -2752,6 +2831,11 @@ export async function POST(req: NextRequest) {
                         ) as ToolUseBlock | undefined)?.name ?? 'unknown',
                       userAborted: req.signal.aborted,
                       inputClosed,
+                      closedBy: inputClosedWhy || null,
+                      closedMsAgo: inputClosedAt ? Date.now() - inputClosedAt : null,
+                      msSinceResult: lastResultAt ? Date.now() - lastResultAt : null,
+                      turnInFlight,
+                      backgroundWork: backgroundWork(),
                       session: (activeConversationId ?? sessionId ?? '?').slice(0, 8),
                       cwd,
                     }),
@@ -2803,6 +2887,9 @@ export async function POST(req: NextRequest) {
             closeOpenInlineBlocks();
             persistAssistant();
             needsNewTurn = true;
+            // The turn is over, so the idle-close timers may act again.
+            turnInFlight = false;
+            lastResultAt = Date.now();
             // If the user already injected the next turn (which is the
             // common case — `pendingTurnMetas` is populated synchronously
             // when the generator yields on inject), promote it RIGHT NOW.
