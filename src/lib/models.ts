@@ -96,6 +96,12 @@ export type ModelInfo = {
    * Informational for now — the token gauge still reads the global constant.
    */
   contextWindow?: number;
+  /**
+   * A faster, cheaper sibling of a stronger model on the same provider — the
+   * "flash" tier. Lets the assistant be told which model suits mechanical work
+   * when it chooses one for an agent it launches (OpenCode backend).
+   */
+  lightweight?: boolean;
 };
 
 /** The one effort ladder every model supports, low → max. */
@@ -243,6 +249,7 @@ export const MODELS: ModelInfo[] = [
     thinkingType: 'adaptive',
     defaultEffort: 'high',
     provider: 'deepseek',
+    lightweight: true,
   },
   {
     // The same V4.1-Flash as the first-party entry above, billed through
@@ -286,6 +293,7 @@ export const MODELS: ModelInfo[] = [
     defaultEffort: 'high',
     provider: 'openrouter',
     contextWindow: 1_048_576,
+    lightweight: true,
   },
   {
     // Moonshot's frontier open-weight model (2.8T MoE), via OpenRouter. The
@@ -412,6 +420,7 @@ export const MODELS: ModelInfo[] = [
     defaultEffort: 'high',
     provider: 'openrouter',
     contextWindow: 1_048_576,
+    lightweight: true,
   },
   {
     // Alibaba's flagship, billed against the Model Studio Token Plan (the

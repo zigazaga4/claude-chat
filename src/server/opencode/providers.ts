@@ -153,16 +153,28 @@ export function credentialFor(
 }
 
 /**
+ * Reasoning levels ("variants") with the request options each one sets, keyed
+ * by wire model id then level name — e.g. `{ low: { reasoning: { effort: 'low' } } }`.
+ */
+export type VariantDefs = Record<string, Record<string, Record<string, unknown>>>;
+
+/**
  * Models this app exposes that the registry does not list under their wire id.
  *
  * Only routing-suffixed ids need this today. The metadata is copied from the
  * base model so capability flags (tool calling, reasoning, context) stay
  * accurate — OpenCode gates behaviour on them, and a model it believes cannot
  * call tools is handed no tools at all.
+ *
+ * Reasoning levels are the one thing copied from a different catalog entry:
+ * OpenCode derives a model's levels from its id, and for a synthesised id that
+ * derivation can come up empty (it does for `@preset/glm-…`) even though the
+ * plain slug the preset routes to has them. `inherited` carries those over.
  */
 function extraModelsFor(
   provider: OpencodeProvider,
   env: NodeJS.ProcessEnv,
+  inherited?: VariantDefs,
 ): NonNullable<NonNullable<Config['provider']>[string]['models']> {
   const models: NonNullable<
     NonNullable<Config['provider']>[string]['models']
@@ -188,6 +200,9 @@ function extraModelsFor(
       // these models actually publish — under-declaring it would cap
       // generation short of what the provider allows.
       limit: { context: getContextWindow(info.id), output: 131_072 },
+      // The server accepts `variants` on a model but the v1 SDK's `Config`
+      // type does not declare it, hence the cast.
+      ...(inherited?.[wire] ? ({ variants: inherited[wire] } as object) : {}),
     };
   }
   return models;
@@ -204,10 +219,11 @@ function extraModelsFor(
 export function buildProviderConfig(
   provider: OpencodeProvider,
   env: NodeJS.ProcessEnv,
+  inherited?: VariantDefs,
 ): NonNullable<Config['provider']> {
   const spec = SPECS[provider];
   const baseUrlOverride = env[spec.baseUrlVar]?.trim();
-  const extraModels = extraModelsFor(provider, env);
+  const extraModels = extraModelsFor(provider, env, inherited);
 
   return {
     [spec.registryId]: {

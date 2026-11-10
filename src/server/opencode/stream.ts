@@ -52,6 +52,7 @@ import type { ModelId } from '@/lib/models';
 import type { McpServerFactory } from './mcpBridge';
 import { startOpencodeBackend } from './server';
 import { startOpencodeRunner } from './run';
+import { buildAgentChoiceBlock } from './subagentChoice';
 
 /**
  * Tools OpenCode must not use in an SSH workspace.
@@ -246,7 +247,11 @@ export async function runOpencodeStream(
       sessionId,
       directory: opts.directory,
       model: opts.model,
-      system: opts.system,
+      // The agent roster is only known once the server has been configured, so
+      // this part of the prompt is appended here rather than in the route.
+      system: [opts.system, buildAgentChoiceBlock(backend.roster)]
+        .filter(Boolean)
+        .join('\n\n'),
       mcpServerNames: Object.keys(mcpFactories),
       disabledTools: opts.isRemote ? REMOTE_BLOCKED_TOOLS : undefined,
       diffCwd: opts.isRemote ? opts.directory : opts.cwd,

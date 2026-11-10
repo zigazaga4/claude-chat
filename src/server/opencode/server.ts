@@ -39,15 +39,27 @@ import {
   type Config,
   type OpencodeClient,
 } from '@opencode-ai/sdk';
-import { getProvider, type ModelId } from '@/lib/models';
+import { MODELS, getProvider, type ModelId } from '@/lib/models';
+import { supportsBackend } from '@/lib/backends';
 import {
   buildEnabledProviders,
   buildProviderConfig,
   isOpencodeProvider,
+  opencodeModelId,
   qualifiedModel,
+  registryProviderId,
   smallModelFor,
+  type OpencodeProvider,
 } from './providers';
 import { registerToolBundle, type McpServerFactory } from './mcpBridge';
+import {
+  agentConfigFor,
+  buildAgentRoster,
+  readVariants,
+  type RosterEntry,
+  type VariantProbe,
+} from './subagentChoice';
+import type { VariantDefs } from './providers';
 
 /**
  * HTTP dispatcher for talking to the spawned OpenCode server.
@@ -88,6 +100,11 @@ export type OpencodeBackend = {
   url: string;
   /** Stops the server and tears down every MCP session it opened. */
   dispose: () => void;
+  /**
+   * The model + reasoning-level pairings this server defines as agents. The
+   * caller needs it to tell the assistant what it can pick.
+   */
+  roster: RosterEntry[];
 };
 
 export type StartOptions = {
@@ -146,7 +163,12 @@ function freePort(): Promise<number> {
  * anything reaches OpenCode. Leaving them at the default `ask` would strand
  * turns waiting on a TUI prompt that has no user in front of it.
  */
-function buildConfig(opts: StartOptions, mcpToken: string): Config {
+function buildConfig(
+  opts: StartOptions,
+  mcpToken: string,
+  roster: RosterEntry[],
+  inherited: VariantDefs,
+): Config {
   const provider = getProvider(opts.model);
   if (!isOpencodeProvider(provider)) {
     throw new Error(`${opts.model} is not served by the OpenCode backend`);
@@ -172,9 +194,12 @@ function buildConfig(opts: StartOptions, mcpToken: string): Config {
     logLevel: 'ERROR',
     model: qualifiedModel(opts.model, opts.env),
     small_model: smallModelFor(opts.model, opts.env),
-    provider: buildProviderConfig(provider, opts.env),
+    provider: buildProviderConfig(provider, opts.env, inherited),
     enabled_providers: buildEnabledProviders(provider),
     ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
+    // The model + reasoning-level pairings the assistant chooses between when
+    // it launches an agent (see ./subagentChoice).
+    ...(roster.length > 0 ? { agent: agentConfigFor(roster, opts.env) } : {}),
     permission: {
       edit: 'allow',
       bash: 'allow',
@@ -192,6 +217,82 @@ function buildConfig(opts: StartOptions, mcpToken: string): Config {
 }
 
 /**
+ * Per-process memo of variant discovery, one entry per provider. On
+ * `globalThis` so a bundler that instantiates this module more than once (route
+ * handlers each get their own copy) still shares one probe.
+ */
+const variantProbes: Map<string, Promise<VariantProbe | null>> = ((
+  globalThis as { __ccOpencodeVariantProbes?: Map<string, Promise<VariantProbe | null>> }
+).__ccOpencodeVariantProbes ??= new Map());
+
+/**
+ * Ask OpenCode which reasoning levels ("variants") it offers each of a
+ * provider's models.
+ *
+ * They cannot be written down: they differ per model, they are derived inside
+ * OpenCode from a model catalog that refreshes on its own, and for the ids this
+ * app synthesises (`:nitro` suffixes, OpenRouter presets) they depend on how
+ * OpenCode treats a model it has no catalog entry for. The only reliable source
+ * is a server configured exactly like the real one — same `provider` block, so
+ * the same synthesised models — so a throwaway one is started, asked, and
+ * stopped. It never makes a model call. Levels OpenCode could not derive for a
+ * synthesised id are borrowed from the plain slug (`readVariants`) and the real
+ * server declares them. The answer is kept for the life of the
+ * process, so only the first stream per provider pays the extra ~1-2s spawn.
+ *
+ * Resolves to null, and is not cached, if the probe fails: the roster then
+ * falls back to default-level agents and the next stream tries again.
+ */
+function discoverVariants(
+  provider: OpencodeProvider,
+  env: NodeJS.ProcessEnv,
+): Promise<VariantProbe | null> {
+  const memo = variantProbes.get(provider);
+  if (memo) return memo;
+
+  const probe = (async (): Promise<VariantProbe> => {
+    const server = await createOpencodeServer({
+      hostname: '127.0.0.1',
+      port: await freePort(),
+      config: {
+        logLevel: 'ERROR',
+        provider: buildProviderConfig(provider, env),
+        enabled_providers: buildEnabledProviders(provider),
+        share: 'disabled',
+        autoupdate: false,
+      },
+      // No abort signal on purpose: this probe is shared by every stream that
+      // starts while it runs, so one client disconnecting must not fail it for
+      // the rest. The timeout bounds it instead.
+      timeout: 60_000,
+    });
+    try {
+      const client = createOpencodeClient({ baseUrl: server.url });
+      const res = await client.config.providers();
+      const entry = res.data?.providers.find((p) => p.id === registryProviderId(provider));
+      // `variants` is in the server's response but not in the v1 SDK's type.
+      return readVariants(
+        entry?.models as Parameters<typeof readVariants>[0],
+        provider,
+        env,
+      );
+    } finally {
+      server.close();
+    }
+  })().catch((err) => {
+    variantProbes.delete(provider);
+    console.warn(
+      `[opencode] could not discover reasoning levels for ${provider}; agents will use each model's default level:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  });
+
+  variantProbes.set(provider, probe);
+  return probe;
+}
+
+/**
  * Spawn an OpenCode server wired to this app's tools, and connect a client.
  *
  * The returned `dispose` is safe to call more than once and must be called in a
@@ -205,7 +306,12 @@ export async function startOpencodeBackend(
   let disposed = false;
 
   try {
-    const config = buildConfig(opts, bundle.token);
+    const provider = getProvider(opts.model);
+    const probe = isOpencodeProvider(provider)
+      ? await discoverVariants(provider, opts.env)
+      : null;
+    const roster = buildAgentRoster(opts.model, probe?.levels ?? null, opts.env);
+    const config = buildConfig(opts, bundle.token, roster, probe?.inherited ?? {});
     const port = await freePort();
     // Deliberately NOT `createOpencode()`, which is the two calls below plus a
     // client on the default `fetch` — and that default is what kills any turn
@@ -227,6 +333,7 @@ export async function startOpencodeBackend(
     return {
       client,
       url: server.url,
+      roster,
       dispose: () => {
         if (disposed) return;
         disposed = true;
