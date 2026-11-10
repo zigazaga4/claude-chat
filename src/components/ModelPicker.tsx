@@ -85,6 +85,12 @@ const STYLES: Record<ModelId, { btn: string; dot: string }> = {
     btn: 'border-green-500/40 bg-green-500/10 text-green-200 hover:bg-green-500/15',
     dot: 'bg-green-400',
   },
+  // The one remaining unused hue. It sits beside amber (Fable) and lime (GLM),
+  // so the label — not the colour — is what separates it from them.
+  'minimax/minimax-m3.1-flash': {
+    btn: 'border-yellow-500/40 bg-yellow-500/10 text-yellow-200 hover:bg-yellow-500/15',
+    dot: 'bg-yellow-400',
+  },
   'qwen3.8-max': {
     btn: 'border-orange-500/40 bg-orange-500/10 text-orange-200 hover:bg-orange-500/15',
     dot: 'bg-orange-400',

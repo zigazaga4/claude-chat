@@ -38,6 +38,7 @@ export type ModelId =
   | 'kimi-k3'
   | 'glm-5.3'
   | 'z-ai/glm-5.3-flash'
+  | 'minimax/minimax-m3.1-flash'
   | 'qwen3.8-max';
 
 /**
@@ -416,6 +417,53 @@ export const MODELS: ModelInfo[] = [
     wireId: '@preset/glm-5-3-flash-fp8',
     label: 'GLM 5.3 Flash (OpenRouter)',
     shortLabel: 'GLM Flash (OR)',
+    thinkingType: 'adaptive',
+    defaultEffort: 'high',
+    provider: 'openrouter',
+    contextWindow: 1_048_576,
+    lightweight: true,
+  },
+  {
+    // MiniMax's efficiency tier (released 2026-10-19), via OpenRouter: a native
+    // multimodal MoE, ~428B total / 23B active, 1M context, 524k max output,
+    // text + image + video in. $0.075/$0.30 per Mtok first-party, cache reads
+    // a tenth of that.
+    //
+    // Routed through the `@preset/minimax-m3-1-flash-official` OpenRouter
+    // preset (see `wireId`), NOT the bare slug, and unlike its DeepSeek and GLM
+    // siblings the preset does not filter on declared precision. The weights
+    // are the reason: the official checkpoint is quantization-aware-trained and
+    // ships with its routed experts and attention already in reduced precision,
+    // so an `fp4` label does not mean "degraded" and an `fp8` one does not mean
+    // "reference" — what a host declares says little about whether it follows
+    // the official recipe. The model card is explicit that "third-party
+    // quantizations may differ", and MiniMax's own endpoint is the one host
+    // that is the reference by definition. It is also cheap ($0.075/$0.30, the
+    // second-lowest of 13), fast (median ~116 tok/s, 100% uptime) and carries
+    // the full 1,048,576-token window.
+    //
+    // So the preset puts MiniMax first and fails over only to hosts that
+    // declare fp8 or better (Tenstorrent, Parasail, StreamLake, GMICloud,
+    // Novita) — never to the fp4 hosts or the undeclared ones (Fireworks,
+    // Together, DigitalOcean, SambaNova). `quantizations` is kept beside the
+    // `only` list so a listed host that later drops to fp4 (Parasail did this
+    // on the GLM preset) is excluded without anyone noticing. The preset also
+    // fixes the sampling MiniMax recommends, `temperature=1.0` and
+    // `top_p=0.95`: the CLI sends neither (verified by capturing its request),
+    // so without it every host would pick its own defaults. A request that does
+    // carry them still wins over the preset.
+    //
+    // Verified 2026-11-01: with the preset's provider block MiniMax serves,
+    // and with MiniMax ignored (a simulated outage) Tenstorrent takes over; all
+    // six hosts answered 6/6 on three checkable arithmetic/trace problems; and
+    // the preset id carries the full CLI payload (tools, thinking, streaming).
+    // Update a snapshot or the host list as a new preset VERSION — POST to
+    // /api/v1/presets/minimax-m3-1-flash-official/chat/completions — with no
+    // rebuild; never put `max_tokens` in that body, the writer persists it.
+    id: 'minimax/minimax-m3.1-flash',
+    wireId: '@preset/minimax-m3-1-flash-official',
+    label: 'MiniMax M3.1 Flash (OpenRouter)',
+    shortLabel: 'MiniMax Flash (OR)',
     thinkingType: 'adaptive',
     defaultEffort: 'high',
     provider: 'openrouter',
