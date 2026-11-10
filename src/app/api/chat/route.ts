@@ -59,6 +59,12 @@ import {
   type ModelId,
 } from '@/lib/models';
 import {
+  SUBAGENT_SPAWN_MATCHER,
+  SUBAGENT_SPAWN_TOOLS,
+  buildSubagentChoiceBlock,
+  buildSubagentChoiceHook,
+} from '@/lib/subagentChoice';
+import {
   MissingProviderCredentialError,
   buildProviderEnv,
   sdkWireModelId,
@@ -273,13 +279,6 @@ const AGENT_TASK_TYPES = new Set([
   // same dependency on this stream that a bare subagent does.
   'local_workflow',
 ]);
-
-/**
- * Tools that start a subagent. Both names are listed because the CLI has
- * shipped this tool under each, and blocking only the current one would let a
- * version bump quietly reopen nested spawning.
- */
-const SUBAGENT_SPAWN_TOOLS = new Set(['Agent', 'Task']);
 
 const NO_NESTED_SPAWN_RULE =
   'You are a subagent. You CANNOT start subagents of your own — the Agent and ' +
@@ -1163,6 +1162,15 @@ export async function POST(req: NextRequest) {
     ? { thinking: sdkThinking, effort }
     : { thinking: sdkThinking };
 
+  /**
+   * Whether the assistant picks the model and effort of the agents it
+   * launches. Only on Anthropic's own endpoint: the Agent tool's `model`
+   * values are the aliases haiku / sonnet / opus, and on every other provider
+   * those aliases are pointed at that provider's models (see `tierAliases`), so
+   * "choose from the Claude models" would be a promise the endpoint can't keep.
+   */
+  const choosesSubagentModel = getProvider(resolvedModel) === 'anthropic';
+
   const isCompactOp = !!compact;
   /**
    * Stable identifier the client uses with /api/chat/inject. We use the
@@ -1926,6 +1934,7 @@ export async function POST(req: NextRequest) {
             attached: attachedServers,
           }),
           buildAgentsBlock(true, describeLiveAgents(sessionId ?? null, Date.now())),
+          choosesSubagentModel ? buildSubagentChoiceBlock() : '',
         ]
           .filter(Boolean)
           .join('\n\n');
@@ -1951,7 +1960,20 @@ export async function POST(req: NextRequest) {
             systemPrompt: `${baseSystem}\n\n${notebookBlock}`,
             env: sdkEnv,
             pathToClaudeCodeExecutable: process.env.CLAUDE_CLI_PATH || 'claude',
-            hooks: NO_NESTED_SUBAGENT_HOOKS,
+            hooks: {
+              ...(choosesSubagentModel
+                ? {
+                    ...NO_NESTED_SUBAGENT_HOOKS,
+                    PreToolUse: [
+                      ...NO_NESTED_SUBAGENT_HOOKS.PreToolUse,
+                      {
+                        matcher: SUBAGENT_SPAWN_MATCHER,
+                        hooks: [buildSubagentChoiceHook(effort)],
+                      },
+                    ],
+                  }
+                : NO_NESTED_SUBAGENT_HOOKS),
+            },
             canUseTool: async (toolName, input, opts) => {
               if (toolName !== 'AskUserQuestion') {
                 return { behavior: 'allow', updatedInput: input };

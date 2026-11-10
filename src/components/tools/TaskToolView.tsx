@@ -2,6 +2,8 @@
 
 import { Bot } from 'lucide-react';
 import type { ToolUseBlock } from '@/lib/types';
+import { isValidEffort } from '@/lib/models';
+import { capSubagentEffort } from '@/lib/subagentChoice';
 import {
   CodeBlock,
   FieldLabel,
@@ -21,6 +23,14 @@ export function TaskToolView({ block }: { block: ToolUseBlock }) {
   const subagent = typeof r.subagent_type === 'string' ? r.subagent_type : 'general-purpose';
   const prompt = typeof r.prompt === 'string' ? r.prompt : '';
   const model = typeof r.model === 'string' ? r.model : '';
+  // Show the effort the agent really runs at: the server lowers `max` to the
+  // agent ceiling before the call executes, but this block keeps what the
+  // model originally asked for.
+  const requestedEffort = typeof r.effort === 'string' ? r.effort : '';
+  const effort = isValidEffort(requestedEffort)
+    ? capSubagentEffort(requestedEffort)
+    : requestedEffort;
+  const choice = [model, effort].filter(Boolean).join(' · ');
   const status = statusOf(block.result);
 
   const summary = (
@@ -28,6 +38,9 @@ export function TaskToolView({ block }: { block: ToolUseBlock }) {
       <span className="shrink-0 rounded-full bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] text-fuchsia-300">
         {subagent}
       </span>
+      {choice && (
+        <span className="shrink-0 text-[10px] text-muted-foreground">{choice}</span>
+      )}
       <span className="truncate">{description || prompt.slice(0, 60)}</span>
     </span>
   );
@@ -48,6 +61,12 @@ export function TaskToolView({ block }: { block: ToolUseBlock }) {
             {model && (
               <span className="rounded-full bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
                 model: {model}
+              </span>
+            )}
+            {effort && (
+              <span className="rounded-full bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                effort: {effort}
+                {effort !== requestedEffort && ` (capped from ${requestedEffort})`}
               </span>
             )}
           </div>
