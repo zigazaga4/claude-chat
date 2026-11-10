@@ -38,6 +38,7 @@ import {
   type EffortLevel,
   type ModelId,
 } from '@/lib/models';
+import { normalizeAutoCompactAt } from '@/lib/autoCompact';
 
 
 export type ChatView = 'picker' | 'conversation';
@@ -107,6 +108,13 @@ export type Instance = {
   model: ModelId;
   effort: EffortLevel;
   autoEffort: boolean;
+  /**
+   * Auto-compact threshold in tokens; 0 = off. When a running loop's context
+   * reaches it the loop is halted, the conversation compacted, and the model
+   * told to continue (see `lib/autoCompact.ts`). Per instance and persisted,
+   * like the other thinking settings.
+   */
+  autoCompactAt: number;
   /**
    * Harness running this conversation. Describes the CURRENT `sessionId`, like
    * `ephemeral` does — once a conversation exists the server enforces whatever
@@ -184,6 +192,7 @@ function makeInstance(seq: number): Instance {
     model: DEFAULT_MODEL_ID,
     effort: getDefaultEffort(DEFAULT_MODEL_ID),
     autoEffort: false,
+    autoCompactAt: 0,
     // The Agent SDK is the conservative default: it can serve every model,
     // whereas OpenCode cannot run Claude. Choosing it is an explicit act.
     backend: DEFAULT_BACKEND,
@@ -478,6 +487,7 @@ type PersistedInstance = {
   model?: string;
   effort?: string;
   autoEffort?: boolean;
+  autoCompactAt?: number;
   /**
    * Persisted so a restored tab still knows its conversation is a throwaway —
    * otherwise it would come back as a normal chat that no listing shows.
@@ -571,6 +581,10 @@ function hydrateInstance(p: PersistedInstance): Instance {
         model,
         effort: coerceEffort(p.effort, model),
         autoEffort: p.autoEffort === true,
+        autoCompactAt: normalizeAutoCompactAt(
+          p.autoCompactAt,
+          getContextWindow(model),
+        ),
       };
     })(),
   };
@@ -617,6 +631,7 @@ function toPersisted(state: State): PersistedShape {
       model: i.model,
       effort: i.effort,
       autoEffort: i.autoEffort,
+      autoCompactAt: i.autoCompactAt,
     })),
   };
 }

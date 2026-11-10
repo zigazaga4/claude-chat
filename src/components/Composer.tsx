@@ -34,6 +34,7 @@ import type { ChatBackend } from '@/lib/backends';
 import type { SendImage } from '@/hooks/useStreamingChat';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
 import AskQuestionPicker from './AskQuestionPicker';
+import AutoCompactPicker from './AutoCompactPicker';
 import AutoEffortToggle from './AutoEffortToggle';
 import EffortPicker from './EffortPicker';
 import EffortSuggestionPanel from './EffortSuggestionPanel';
@@ -101,6 +102,11 @@ type ComposerProps = {
   onAbort: () => void;
   onCompact: () => void;
   canCompact?: boolean;
+  /** Auto-compact threshold in tokens (0 = off) and its setter. */
+  autoCompactAt: number;
+  onAutoCompactChange: (tokens: number) => void;
+  /** Why auto-compact cannot apply to this conversation, if it cannot. */
+  autoCompactUnavailable?: string;
   tokensUsed: number;
   contextWindow: number;
   /**
@@ -147,6 +153,9 @@ export default function Composer({
   onAbort,
   onCompact,
   canCompact = true,
+  autoCompactAt,
+  onAutoCompactChange,
+  autoCompactUnavailable,
   tokensUsed,
   contextWindow,
   cacheWarm = false,
@@ -688,6 +697,16 @@ export default function Composer({
             <Minimize2 className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Compact</span>
           </button>
+          {/* Deliberately NOT disabled while streaming: the point of this
+              setting is to be moved while the loop it governs is running, and
+              the change is pushed to that live stream. */}
+          <AutoCompactPicker
+            value={autoCompactAt}
+            onChange={onAutoCompactChange}
+            contextWindow={contextWindow}
+            disabled={disabled}
+            unavailableReason={autoCompactUnavailable}
+          />
           <input
             ref={fileRef}
             type="file"

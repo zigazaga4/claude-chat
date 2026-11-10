@@ -17,8 +17,12 @@ import type {
   UserMessage,
 } from '@/lib/types';
 import type { EffortLevel } from '@/lib/models';
+import { chainAutoCompact, type StreamOutcome } from '@/lib/autoCompact';
 import { useInstances } from '@/state/instances';
 import { setPlanUsage, setRateLimitUsage } from '@/state/usage';
+
+/** What `runStream` reports when it refused to start (nothing was sent). */
+const NOT_RUN: StreamOutcome = { ran: false, aborted: false, compacted: false };
 
 type StreamEvent =
   | { type: 'session'; sessionId: string }
@@ -121,6 +125,7 @@ type StreamEvent =
         monthlyLimit: number | null;
       } | null;
     }
+  | { type: 'auto_compact'; used: number; limit: number }
   | { type: 'message_complete'; assistantMessageId: string }
   | { type: 'complete' }
   | { type: 'error'; error: string };
@@ -170,6 +175,14 @@ type SendOptions = {
   images?: SendImage[];
   /** When true, don't append a user message — used for /compact slash command. */
   compact?: boolean;
+  /** The `/compact` was chained after an auto-compact halt, not asked for by the user. */
+  autoTriggered?: boolean;
+  /**
+   * Open this stream with auto-compact off, overriding the instance's setting
+   * for this one stream. Used for the run after a compaction that left the
+   * context too full to be worth halting again (see `chainAutoCompact`).
+   */
+  suppressAutoCompact?: boolean;
   /**
    * Explicit target instance. Omitted for normal user sends (which target the
    * active instance), but set by the fallback drain so a queued message always
@@ -346,17 +359,17 @@ export function useStreamingChat() {
    * message and for fallback when an inject is rejected (stream just closed).
    */
   const runStream = useCallback(
-    async (opts: SendOptions) => {
+    async (opts: SendOptions): Promise<StreamOutcome> => {
       const { prompt, images, compact } = opts;
       const trimmed = prompt.trim();
-      if (!trimmed && !compact) return;
+      if (!trimmed && !compact) return NOT_RUN;
 
       // Normal sends target the active instance; the fallback drain passes an
       // explicit instanceId so it reopens a stream on the right instance.
       const targetId = opts.instanceId ?? stateRef.current.activeId;
       const inst = stateRef.current.instances.find((i) => i.id === targetId);
-      if (!inst || !inst.cwd) return;
-      if (compact && !inst.sessionId) return; // /compact only valid mid-conversation
+      if (!inst || !inst.cwd) return NOT_RUN;
+      if (compact && !inst.sessionId) return NOT_RUN; // /compact only valid mid-conversation
 
       // A second stream while the first is still alive would double-resume
       // the same session and corrupt the transcript. Redirect into the
@@ -391,7 +404,7 @@ export function useStreamingChat() {
           enqueueMessage(inst.id, queueMsg);
           void injectMessage(inst.id, queueMsg, images);
         }
-        return;
+        return NOT_RUN;
       }
       inFlightRef.current.add(inst.id);
 
@@ -577,6 +590,21 @@ export function useStreamingChat() {
       abortersRef.current.set(instId, ac);
       liveStreamsRef.current.set(instId, { streamId: null });
 
+      // What this stream turned out to be, for the caller (see `StreamOutcome`)
+      // and for the auto-compact hand-off in the `finally` below.
+      let sawCompactBoundary = false;
+      let postCompactTokens: number | undefined;
+      // Declared through a cast: assigned inside the event loop, read in the
+      // `finally`, and a plain `= null` would let flow analysis narrow it to
+      // `never` there.
+      let autoCompactHalt = null as { used: number; limit: number } | null;
+      const outcome = (): StreamOutcome => ({
+        ran: true,
+        aborted: ac.signal.aborted,
+        compacted: sawCompactBoundary,
+        postTokens: postCompactTokens,
+      });
+
       try {
         // Model + effort are read off the OWNING instance, not a global pref,
         // so each tab talks to the model it was set to — including a queued
@@ -598,6 +626,11 @@ export function useStreamingChat() {
             assistantMessageId: assistantId,
             images,
             compact,
+            autoTriggered: opts.autoTriggered,
+            // Per stream, so the instance's current setting rides along on
+            // every send; a change made while this stream runs is pushed to it
+            // separately (`setAutoCompactAt`).
+            autoCompactAt: opts.suppressAutoCompact ? 0 : inst.autoCompactAt,
             model,
             effort,
             // Only read on the turn that creates the conversation; harmless
@@ -627,7 +660,7 @@ export function useStreamingChat() {
             streamingMessageId: null,
             compacting: false,
           });
-          return;
+          return outcome();
         }
 
         const reader = res.body.getReader();
@@ -1052,6 +1085,15 @@ export function useStreamingChat() {
                 if (event.postTokens != null) {
                   patch(instId, { tokensUsed: event.postTokens });
                 }
+                sawCompactBoundary = true;
+                postCompactTokens = event.postTokens;
+                break;
+              }
+              case 'auto_compact': {
+                // The server halted the loop at the user's threshold. Nothing
+                // to do until the stream has fully closed — the hand-off is in
+                // the `finally` below, once the CLI is guaranteed to be gone.
+                autoCompactHalt = { used: event.used, limit: event.limit };
                 break;
               }
               case 'message_complete': {
@@ -1136,9 +1178,10 @@ export function useStreamingChat() {
         // because the stream closed before we managed to POST them) get sent
         // one at a time as fresh /api/chat requests. This is also the
         // recovery path for `injectMessage` returning 410.
-        if (!compact) {
-          const after = stateRef.current.instances.find((i) => i.id === instId);
-          const next = after?.queuedMessages[0];
+        const after = () =>
+          stateRef.current.instances.find((i) => i.id === instId);
+        const drainQueue = () => {
+          const next = after()?.queuedMessages[0];
           if (next) {
             removeQueuedMessage(instId, next.id);
             queueMicrotask(() => {
@@ -1155,8 +1198,38 @@ export function useStreamingChat() {
               });
             });
           }
+        };
+
+        const halt = autoCompactHalt;
+        if (!compact && halt && !ac.signal.aborted) {
+          // The loop was halted at the user's token threshold: compact, then
+          // tell the model to continue. Queued messages are deliberately NOT
+          // drained first — the "Continue." stream picks them up through the
+          // `stream_ready` catch-up, so they reach the model after the
+          // compaction instead of ahead of it. Only if the chain gives up
+          // (compaction failed or was cancelled) do they go out the old way.
+          //
+          // The halted stream is gone, so an "already injected" mark on a
+          // message still queued is stale — that stream accepted it and never
+          // delivered it. Left in place it would make the catch-up skip the
+          // message, parking it until the whole continuation had finished.
+          for (const q of after()?.queuedMessages ?? []) {
+            injectedRef.current.delete(q.userMessageId);
+          }
+          queueMicrotask(() => {
+            const run = runStreamRef.current;
+            if (!run) return drainQueue();
+            void chainAutoCompact(run, instId, halt.limit)
+              .then((r) => {
+                if (r.status === 'stopped') drainQueue();
+              })
+              .catch(drainQueue);
+          });
+        } else if (!compact) {
+          drainQueue();
         }
       }
+      return outcome();
     },
     [
       stateRef,
@@ -1182,7 +1255,7 @@ export function useStreamingChat() {
    * sync via useEffect so we never assign during render (React rule).
    */
   const runStreamRef = useRef<
-    ((opts: SendOptions) => Promise<void>) | null
+    ((opts: SendOptions) => Promise<StreamOutcome>) | null
   >(null);
   useEffect(() => {
     runStreamRef.current = runStream;
@@ -1271,6 +1344,31 @@ export function useStreamingChat() {
     abortersRef.current.get(id)?.abort();
   }, [stateRef]);
 
+  /**
+   * Change the active instance's auto-compact threshold (0 = off).
+   *
+   * Stored on the instance, which is what every later stream is opened with —
+   * and also pushed to the stream that is running right now, because that is
+   * usually the one the user is looking at when they reach for this setting.
+   * A 410 from the server just means there is no live loop to apply it to.
+   */
+  const setAutoCompactAt = useCallback(
+    (tokens: number) => {
+      const id = stateRef.current.activeId;
+      patch(id, { autoCompactAt: tokens });
+      const streamId = liveStreamsRef.current.get(id)?.streamId;
+      if (!streamId) return;
+      void fetch('/api/chat/auto-compact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streamId, autoCompactAt: tokens }),
+      }).catch(() => {
+        /* the next stream carries the value anyway */
+      });
+    },
+    [stateRef, patch],
+  );
+
   const submitAnswer = useCallback(
     async (toolUseId: string, answers: Record<string, string>) => {
       const inst = stateRef.current.instances.find(
@@ -1292,5 +1390,5 @@ export function useStreamingChat() {
     [stateRef, patch],
   );
 
-  return { send, queue, unqueue, compact, abort, submitAnswer };
+  return { send, queue, unqueue, compact, abort, submitAnswer, setAutoCompactAt };
 }

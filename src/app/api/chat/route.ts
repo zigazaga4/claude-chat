@@ -48,6 +48,7 @@ import { psEncode, psLit, toWinPath, type RemotePlatform } from '@/server/remote
 import { getStoredSshPassword, getWorkspace } from '@/server/workspaces';
 import {
   DEFAULT_MODEL_ID,
+  getContextWindow,
   getDefaultEffort,
   getModelInfo,
   getProvider,
@@ -64,6 +65,7 @@ import {
   buildSubagentChoiceBlock,
   buildSubagentChoiceHook,
 } from '@/lib/subagentChoice';
+import { buildAutoCompactHook, normalizeAutoCompactAt } from '@/lib/autoCompact';
 import {
   backgroundHoldMs,
   describeDuration,
@@ -341,6 +343,17 @@ type ChatRequest = {
   assistantMessageId: string;
   images?: RequestImage[];
   compact?: boolean;
+  /**
+   * Set on the `/compact` run the client chains after an `auto_compact` event,
+   * so the boundary it writes is labelled as automatic rather than manual.
+   */
+  autoTriggered?: boolean;
+  /**
+   * Auto-compact threshold in tokens (0 / absent = off): halt the loop between
+   * tool batches once the context reaches it. Validated against the model's
+   * window; see `lib/autoCompact.ts`.
+   */
+  autoCompactAt?: number;
   /** Client-selected model — validated against the registry; falls back if absent/invalid. */
   model?: string;
   /** Client-selected effort ("thinking power") — falls back to the model default. */
@@ -1154,6 +1167,15 @@ export async function POST(req: NextRequest) {
 
   const isCompactOp = !!compact;
   /**
+   * Context size at which the loop is halted so the client can compact and
+   * continue (0 = off). Never on a compaction itself, and never on the OpenCode
+   * engine, which has no compaction to hand the conversation to.
+   */
+  const initialAutoCompactAt =
+    isCompactOp || useOpencode
+      ? 0
+      : normalizeAutoCompactAt(body.autoCompactAt, getContextWindow(resolvedModel));
+  /**
    * Stable identifier the client uses with /api/chat/inject. We use the
    * caller-allocated assistantMessageId of the first turn — it's already in
    * the client's hand at submit time. Compact ops are uninjectable so they
@@ -1252,6 +1274,22 @@ export async function POST(req: NextRequest) {
        * mid-turn, long after beginNextTurn has run.
        */
       let lastAssistantApiUsageTotal: number | null = null;
+      /**
+       * Live auto-compact threshold (0 = off). A `let` because the user can move
+       * it while a loop is running (`/api/chat/auto-compact`), and the hook
+       * reads it afresh on every tool batch.
+       */
+      let autoCompactLimit = initialAutoCompactAt;
+      /**
+       * Set when the auto-compact hook halted the loop. Cleared the moment a
+       * later turn begins on this stream: that means a message the user sent in
+       * the meantime superseded the halted work, and compacting then telling the
+       * model to "Continue." would resume something nobody asked to resume.
+       */
+      // Declared through a cast: it is assigned from closures (the hook,
+      // beginNextTurn), which TypeScript's flow analysis cannot see, so a plain
+      // `= null` would narrow every later read to `never`.
+      let autoCompactTrip = null as { used: number; limit: number } | null;
       /**
        * uuid of the last top-level CLI transcript (chain) entry this turn has
        * produced — the newest `assistant` or `user` message on the main thread.
@@ -1626,6 +1664,12 @@ export async function POST(req: NextRequest) {
       const unregister = isCompactOp
         ? () => {}
         : registerActiveStream(streamId, {
+            setAutoCompactAt: (tokens: number) => {
+              autoCompactLimit = normalizeAutoCompactAt(
+                tokens,
+                getContextWindow(resolvedModel),
+              );
+            },
             push: (injectReq: InjectRequest): InjectResult => {
               const imageContent = buildImageContentBlocks(injectReq.images);
               const userImages =
@@ -1704,6 +1748,8 @@ export async function POST(req: NextRequest) {
         // last turn's reading in place answers "yes" for a turn that has not
         // started yet.
         lastAssistantApiUsageTotal = null;
+        // A new turn began, so whatever the hook halted has been overtaken.
+        autoCompactTrip = null;
         // The previous turn's fork point was flushed by persistAssistant above.
         turnLastChainUuid = null;
         currentTurn = next;
@@ -1987,6 +2033,23 @@ export async function POST(req: NextRequest) {
         // whether the user has already been told tooling is degraded.
         let initCount = 0;
         let mcpWarningSent = false;
+        // Halts the loop between tool batches once the context reaches the
+        // user's threshold; the client then compacts and continues (see
+        // `lib/autoCompact.ts`). Background work gates it because it lives
+        // inside the CLI process this stream is about to end — and, now that
+        // such work holds the stream open, halting would not even end it.
+        const autoCompactHook = buildAutoCompactHook({
+          limit: () => autoCompactLimit,
+          used: () => lastAssistantApiUsageTotal,
+          busy: () => backgroundWork() > 0,
+          onTrip: (used, limit) => {
+            autoCompactTrip = { used, limit };
+            console.log(
+              `[chat] auto-compact: halting the loop at ${used} tokens ` +
+                `(limit ${limit}) on ${activeConversationId ?? sessionId ?? 'new session'}`,
+            );
+          },
+        });
         const queryInstance = query({
           prompt: promptInput,
           options: {
@@ -2015,6 +2078,10 @@ export async function POST(req: NextRequest) {
                     ],
                   }
                 : NO_NESTED_SUBAGENT_HOOKS),
+              // Registered even while the threshold is off: it reads the live
+              // limit, so switching auto-compact on mid-run takes effect at the
+              // next tool batch instead of waiting for the next message.
+              ...(isCompactOp ? {} : { PostToolBatch: [{ hooks: [autoCompactHook] }] }),
             },
             canUseTool: async (toolName, input, opts) => {
               if (toolName !== 'AskUserQuestion') {
@@ -2384,8 +2451,16 @@ export async function POST(req: NextRequest) {
                     duration_ms?: number;
                   }
                 | null) ?? null;
+            // A `/compact` run the client chained after `auto_compact` is
+            // still a compact op, but it was not the user's doing.
             const trigger: 'manual' | 'auto' =
-              meta?.trigger === 'auto' ? 'auto' : isCompactOp ? 'manual' : 'auto';
+              meta?.trigger === 'auto'
+                ? 'auto'
+                : isCompactOp
+                  ? body.autoTriggered === true
+                    ? 'auto'
+                    : 'manual'
+                  : 'auto';
             // The turn is now mid-flight, not finished — see `compactedThisTurn`.
             // Only for a real turn: on a manual `/compact` the compaction IS
             // the whole job, so its `result` genuinely ends the stream and
@@ -2989,6 +3064,13 @@ export async function POST(req: NextRequest) {
             usageFetchInFlight,
             new Promise((r) => setTimeout(r, 2_000)),
           ]);
+        }
+        // The loop was halted at the user's threshold and nothing has run since.
+        // Sent only now that the CLI has exited, so the compaction the client
+        // starts next is not racing a process still writing the transcript it
+        // is about to resume. Not when the user aborted: stopping wins.
+        if (autoCompactTrip && !req.signal.aborted) {
+          send({ type: 'auto_compact', ...autoCompactTrip });
         }
         send({ type: 'complete' });
       } catch (err) {

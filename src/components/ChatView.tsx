@@ -43,7 +43,8 @@ export default function ChatView() {
   // picks. The pickers below read/write the active instance via `patch`.
   const { model, effort, autoEffort } = active;
   const { suggest } = useEffortSuggestion();
-  const { send, queue, unqueue, abort, compact, submitAnswer } = useStreamingChat();
+  const { send, queue, unqueue, abort, compact, submitAnswer, setAutoCompactAt } =
+    useStreamingChat();
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasNearBottom = useRef(true);
   const isPrepending = useRef(false);
@@ -451,6 +452,15 @@ export default function ChatView() {
             onAbort={abort}
             onCompact={() => void compact()}
             canCompact={!!active.sessionId}
+            autoCompactAt={active.autoCompactAt}
+            onAutoCompactChange={setAutoCompactAt}
+            // OpenCode runs its own loop and has no compaction in this app, so
+            // there is nothing the halted conversation could be handed to.
+            autoCompactUnavailable={
+              active.backend === 'opencode'
+                ? 'OpenCode conversations have no compaction'
+                : undefined
+            }
             tokensUsed={active.tokensUsed}
             cacheWarm={active.cacheWarm}
             contextWindow={contextWindow}

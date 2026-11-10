@@ -20,6 +20,8 @@
  *   js:<expression>  evaluate it and log the result; for anything else, such
  *                    as scrolling a card into view WITHOUT clicking it, which
  *                    would toggle an auto-opened card shut
+ *   wait:<ms>        pause that long, for something that takes real time (a
+ *                    streamed reply) rather than the default 1.2 s per step
  */
 
 const [, , base, password, out, clickSelector] = process.argv;
@@ -124,6 +126,11 @@ function stepExpression(step) {
 }
 
 for (const step of (clickSelector ?? '').split('>>').map((s) => s.trim()).filter(Boolean)) {
+  if (step.startsWith('wait:')) {
+    await wait(Number(step.slice(5)));
+    console.log('  waited', step.slice(5), 'ms');
+    continue;
+  }
   const res = await send('Runtime.evaluate', {
     returnByValue: true,
     expression: stepExpression(step),

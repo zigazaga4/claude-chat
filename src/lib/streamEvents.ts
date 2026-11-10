@@ -154,6 +154,18 @@ export type StreamEvent =
         monthlyLimit: number | null;
       } | null;
     }
+  | {
+      /**
+       * The loop was halted because the context reached the user's auto-compact
+       * threshold (see `lib/autoCompact.ts`). Sent last, just before `complete`,
+       * when the CLI has already exited — the client's cue to compact the
+       * conversation and then send "Continue.". Never sent if a later turn
+       * began on the stream, since that message superseded the halted work.
+       */
+      type: 'auto_compact';
+      used: number;
+      limit: number;
+    }
   | { type: 'message_complete'; assistantMessageId: string }
   | { type: 'complete' }
   | { type: 'error'; error: string };

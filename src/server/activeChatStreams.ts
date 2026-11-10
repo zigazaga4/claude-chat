@@ -40,6 +40,11 @@ export type InjectResult =
 
 type Entry = {
   push: (req: InjectRequest) => InjectResult;
+  /**
+   * Move the auto-compact threshold of the running stream (0 = off). Optional
+   * because only streams that run the Claude Code CLI have a loop to halt.
+   */
+  setAutoCompactAt?: (tokens: number) => void;
 };
 
 type Store = Map<string, Entry>;
@@ -67,4 +72,16 @@ export function injectIntoStream(
   const entry = store.get(streamId);
   if (!entry) return { ok: false, reason: 'no-active-stream' };
   return entry.push(req);
+}
+
+/**
+ * Change the auto-compact threshold of a running stream. Returns false when
+ * there is no such stream or it has no loop to halt, so the caller can tell
+ * "applied" from "nothing to apply it to" (the next message will carry it).
+ */
+export function setStreamAutoCompactAt(streamId: string, tokens: number): boolean {
+  const entry = store.get(streamId);
+  if (!entry?.setAutoCompactAt) return false;
+  entry.setAutoCompactAt(tokens);
+  return true;
 }

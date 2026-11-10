@@ -1,6 +1,7 @@
 'use client';
 
 import { ArrowDown, Sparkles } from 'lucide-react';
+import { formatTokensCompact } from '@/lib/formatTokens';
 
 type CompactBoundaryDividerProps = {
   trigger?: 'manual' | 'auto' | string;
@@ -10,16 +11,7 @@ type CompactBoundaryDividerProps = {
 };
 
 function fmtTokens(n: number | undefined) {
-  if (n == null) return '?';
-  if (n >= 1_000_000) {
-    const m = n / 1_000_000;
-    return `${m >= 10 ? m.toFixed(0) : m.toFixed(1)}M`;
-  }
-  if (n >= 1_000) {
-    const k = n / 1_000;
-    return `${k >= 100 ? k.toFixed(0) : k.toFixed(1)}k`;
-  }
-  return `${n}`;
+  return n == null ? '?' : formatTokensCompact(n);
 }
 
 function fmtDuration(ms: number | undefined) {
