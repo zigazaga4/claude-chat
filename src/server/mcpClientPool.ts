@@ -6,9 +6,11 @@
  * (a `uvx` cold start is seconds) and are re-created when an entry's config
  * changes — the pool keys by entry id and re-fingerprint on every acquire.
  *
- * Three transports, all standard MCP framing (newline-delimited JSON-RPC on
+ * Four transports, all standard MCP framing (newline-delimited JSON-RPC on
  * stdio, or streamable HTTP):
  *
+ *   bundled      a server that ships inside cloudchat, run in-process and
+ *                joined to the client by a linked in-memory pair
  *   local-stdio  child process on this machine (StdioClientTransport)
  *   ssh-stdio    process on a pooled SSH host — the framing rides an ssh2
  *                exec channel, so nothing but the server itself needs to be
@@ -25,10 +27,12 @@ import {
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ReadBuffer } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type { ClientChannel } from 'ssh2';
+import { getBundledMcpServer } from './bundledMcp';
 import { connectOptsForWorkspace, getHost } from './sshHosts';
 import {
   entryFingerprint,
@@ -136,6 +140,17 @@ export function splitCommand(line: string): { command: string; args: string[] } 
 
 async function buildTransport(entry: ResolvedMcpEntry): Promise<Transport> {
   switch (entry.transport) {
+    case 'bundled': {
+      // A server that ships inside cloudchat: no process, no network. Run it
+      // in-process and join it to the client with a linked in-memory pair, so
+      // probing, pooling and the proxy see it exactly like any other server.
+      const spec = getBundledMcpServer(entry.command);
+      if (!spec) throw new Error(`unknown built-in MCP server "${entry.command ?? ''}"`);
+      const server = await spec.create();
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(serverSide);
+      return clientSide;
+    }
     case 'http': {
       if (!entry.url) throw new Error('http MCP entry has no url');
       return new StreamableHTTPClientTransport(new URL(entry.url), {

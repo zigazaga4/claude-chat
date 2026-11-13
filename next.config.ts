@@ -7,7 +7,10 @@ const nextConfig: NextConfig = {
   // page. Setting this lets a build be verified without touching the live one.
   distDir: process.env.CC_DIST_DIR || ".next",
   // Native modules — keep them as runtime `require` instead of bundling.
-  serverExternalPackages: ["ssh2", "node-pty", "better-sqlite3"],
+  // Baileys (WhatsApp) is not native, but it is ESM-only with its own wasm and
+  // protobuf dependencies; bundling it buys nothing and it is `import()`ed on
+  // demand so the ~90 MB it costs is never paid until WhatsApp is used.
+  serverExternalPackages: ["ssh2", "node-pty", "better-sqlite3", "@whiskeysockets/baileys"],
   images: {
     // This app never imports `next/image` — every image it shows is either a
     // plain <img> or a data URL from the composer. Leaving the optimizer on

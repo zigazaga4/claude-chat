@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Ghost, LogOut, Menu, Plus, ScrollText, X } from 'lucide-react';
+import { FaWhatsapp } from 'react-icons/fa6';
 import { cn } from '@/lib/cn';
 import { useInstances } from '@/state/instances';
 import Logo from './Logo';
 import SystemPromptModal from './SystemPromptModal';
+import WhatsAppModal from './WhatsAppModal';
 
 function basename(p: string | null) {
   if (!p) return null;
@@ -30,6 +32,7 @@ export default function InstanceTabs({ onOpenMenu }: { onOpenMenu?: () => void }
     openNewConversation,
   } = useInstances();
   const [promptOpen, setPromptOpen] = useState(false);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
   // Held in a ref as well as state: dragover fires many times a second and
   // reads this, and a ref is the value that is already current when it does.
   const draggingRef = useRef<string | null>(null);
@@ -300,6 +303,15 @@ export default function InstanceTabs({ onOpenMenu }: { onOpenMenu?: () => void }
       </button>
       <button
         type="button"
+        onClick={() => setWhatsappOpen(true)}
+        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-emerald-300"
+        aria-label="Connect WhatsApp"
+        title="Connect WhatsApp"
+      >
+        <FaWhatsapp className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
         onClick={async () => {
           await fetch('/api/auth/logout', { method: 'POST' });
           // Full navigation, not a router push — the cleared cookie has to be
@@ -313,6 +325,7 @@ export default function InstanceTabs({ onOpenMenu }: { onOpenMenu?: () => void }
         <LogOut className="h-3.5 w-3.5" />
       </button>
       <SystemPromptModal open={promptOpen} onClose={() => setPromptOpen(false)} />
+      <WhatsAppModal open={whatsappOpen} onClose={() => setWhatsappOpen(false)} />
     </div>
   );
 }

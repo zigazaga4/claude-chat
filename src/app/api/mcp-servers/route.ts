@@ -13,12 +13,14 @@
  */
 
 import type { NextRequest } from 'next/server';
+import { getBundledMcpServer } from '@/server/bundledMcp';
 import {
   attachToWorkspace,
   deleteMcpServer,
   detachFromWorkspace,
   getMcpServer,
   getMcpServerById,
+  isBundledEntry,
   listAttachmentsForWorkspace,
   listMcpServers,
   listWorkspacesForServer,
@@ -32,6 +34,7 @@ import { dropMcpClientsForServer, probeMcpEntry } from '@/server/mcpClientPool';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/** What a user may define. `bundled` is shipped with the app and never creatable here. */
 const TRANSPORTS: McpTransport[] = ['local-stdio', 'ssh-stdio', 'http'];
 
 function isTransport(v: unknown): v is McpTransport {
@@ -49,6 +52,8 @@ function toWire(entry: McpServerEntry, attachedCwds: string[]) {
     hostRef: entry.hostRef,
     enabled: entry.enabled,
     status: entry.status,
+    /** One-line blurb for built-in servers, shown in place of the command. */
+    description: getBundledMcpServer(entry.command)?.description ?? null,
     envKeys: Object.keys(entry.env),
     headerKeys: Object.keys(entry.headers),
     attachedCwds,
@@ -251,6 +256,12 @@ export async function DELETE(req: NextRequest) {
   }
   const entry = getMcpServer(name);
   if (!entry) return Response.json({ error: `No server named "${name}"` }, { status: 404 });
+  if (isBundledEntry(entry)) {
+    return Response.json(
+      { error: `"${name}" is built into cloudchat and cannot be deleted — switch it off per folder instead.` },
+      { status: 400 },
+    );
+  }
   dropMcpClientsForServer(entry.id);
   deleteMcpServer(name);
   return Response.json({ ok: true });

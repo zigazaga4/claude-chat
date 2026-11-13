@@ -13,7 +13,10 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
-type Transport = 'local-stdio' | 'ssh-stdio' | 'http';
+/** What a user can define through the form. */
+type UserTransport = 'local-stdio' | 'ssh-stdio' | 'http';
+/** `bundled` servers ship inside cloudchat: they can be switched on and off, never created or deleted here. */
+type Transport = UserTransport | 'bundled';
 
 type WireServer = {
   id: string;
@@ -21,6 +24,8 @@ type WireServer = {
   transport: Transport;
   command: string | null;
   url: string | null;
+  /** One-line blurb, set for built-in servers. */
+  description: string | null;
   hostRef: string | null;
   enabled: boolean;
   status: string | null;
@@ -43,11 +48,14 @@ type Props = {
   onClose: () => void;
 };
 
-const TRANSPORT_LABELS: Record<Transport, string> = {
+const TRANSPORT_LABELS: Record<UserTransport, string> = {
   'ssh-stdio': 'SSH command',
   'local-stdio': 'Local command',
   http: 'HTTP endpoint',
 };
+
+const transportLabel = (t: Transport): string =>
+  t === 'bundled' ? 'Built in' : TRANSPORT_LABELS[t];
 
 /**
  * Manage which MCP servers are live in ONE folder.
@@ -250,18 +258,24 @@ function McpManager({ cwd, label, onClose }: Omit<Props, 'open'>) {
                             {s.name}
                           </span>
                           <span className="shrink-0 rounded border border-border/60 bg-muted/50 px-1 text-[9.5px] uppercase tracking-wide text-muted-foreground">
-                            {TRANSPORT_LABELS[s.transport]}
+                            {transportLabel(s.transport)}
                           </span>
                           {busy === s.name && (
                             <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
                           )}
                         </div>
-                        <div
-                          className="truncate font-mono text-[10.5px] text-muted-foreground/80"
-                          title={s.command ?? s.url ?? ''}
-                        >
-                          {s.command ?? s.url}
-                        </div>
+                        {s.description ? (
+                          <div className="text-[10.5px] leading-snug text-muted-foreground/80">
+                            {s.description}
+                          </div>
+                        ) : (
+                          <div
+                            className="truncate font-mono text-[10.5px] text-muted-foreground/80"
+                            title={s.command ?? s.url ?? ''}
+                          >
+                            {s.command ?? s.url}
+                          </div>
+                        )}
                         {s.transport === 'ssh-stdio' && (
                           <div className="truncate text-[10px] text-muted-foreground/70">
                             {s.hostRef
@@ -304,15 +318,17 @@ function McpManager({ cwd, label, onClose }: Omit<Props, 'open'>) {
                             <RefreshCw className="h-3.5 w-3.5" />
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => void remove(s)}
-                          disabled={busy === s.name}
-                          title="Delete this server everywhere"
-                          className="rounded p-1 text-muted-foreground/60 hover:bg-red-500/15 hover:text-red-300"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {s.transport !== 'bundled' && (
+                          <button
+                            type="button"
+                            onClick={() => void remove(s)}
+                            disabled={busy === s.name}
+                            title="Delete this server everywhere"
+                            className="rounded p-1 text-muted-foreground/60 hover:bg-red-500/15 hover:text-red-300"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </li>
@@ -381,7 +397,7 @@ function AddServerForm({
 }) {
   // An SSH folder defaults to running the server on its own host — the common
   // case, and the one that needs no extra typing.
-  const [transport, setTransport] = useState<Transport>(
+  const [transport, setTransport] = useState<UserTransport>(
     isSshFolder ? 'ssh-stdio' : 'local-stdio',
   );
   const [name, setName] = useState('');
@@ -427,7 +443,7 @@ function AddServerForm({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
       <div className="flex gap-1">
-        {(Object.keys(TRANSPORT_LABELS) as Transport[]).map((t) => (
+        {(Object.keys(TRANSPORT_LABELS) as UserTransport[]).map((t) => (
           <button
             key={t}
             type="button"

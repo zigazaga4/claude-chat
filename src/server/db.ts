@@ -110,6 +110,40 @@ export function getDb(): Database.Database {
       FOREIGN KEY (server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_mcp_ws_cwd ON mcp_workspace_servers(cwd);
+
+    -- WhatsApp linked-device state (see src/server/whatsapp.ts). Credentials
+    -- and Signal keys, one row per key, the VALUE encrypted at rest with the
+    -- same secrets.key the SSH passwords use: this is enough to act as the
+    -- user's WhatsApp account, so it never sits in plaintext.
+    CREATE TABLE IF NOT EXISTS whatsapp_auth (
+      k  TEXT PRIMARY KEY,
+      v  TEXT NOT NULL
+    );
+
+    -- Names the account knows, so a recipient can be given as a name instead
+    -- of a number. name is what the owner saved the contact as; push is the
+    -- name the contact picked for themselves. Groups carry their subject in
+    -- name and kind = 'group'.
+    CREATE TABLE IF NOT EXISTS whatsapp_contacts (
+      jid         TEXT PRIMARY KEY,
+      name        TEXT,
+      push        TEXT,
+      kind        TEXT NOT NULL DEFAULT 'contact',
+      updated_at  INTEGER NOT NULL
+    );
+
+    -- Every message an agent sent in the owner's name, successful or not: the
+    -- audit trail, and what the hourly send cap counts.
+    CREATE TABLE IF NOT EXISTS whatsapp_sends (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      at     INTEGER NOT NULL,
+      jid    TEXT NOT NULL,
+      label  TEXT,
+      body   TEXT NOT NULL,
+      ok     INTEGER NOT NULL,
+      error  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_sends_at ON whatsapp_sends(at);
   `);
 
   // Migrate older DBs that pre-date the SSH columns. SQLite is tolerant

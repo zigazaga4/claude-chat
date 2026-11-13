@@ -41,11 +41,13 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { getBundledMcpServer } from './bundledMcp';
 import {
   attachToWorkspace,
   deleteMcpServer,
   detachFromWorkspace,
   getMcpServer,
+  isBundledEntry,
   listMcpServers,
   listServersForWorkspace,
   listWorkspacesForServer,
@@ -122,7 +124,36 @@ export type McpConnectorContext = {
    * descriptions and results spell the tools it connects — see `McpNaming`.
    */
   style: McpNaming;
+  /**
+   * Make freshly attached servers callable in the CURRENT turn.
+   *
+   * Only an engine that can change its tool set mid-turn provides this — the
+   * Agent SDK can (`Query.setMcpServers`), OpenCode builds its tool map once
+   * per turn and cannot. Absent, or resolving `false`, means the servers go
+   * live on the next message, which is what the result then says.
+   */
+  activate?: (entries: ResolvedMcpEntry[]) => Promise<boolean>;
 };
+
+/**
+ * Closing line of a successful connect/attach: when the new tools can be used.
+ *
+ * Says what actually happened rather than what usually does — a model told
+ * "available now" that then finds nothing concludes the connection failed.
+ */
+function availability(
+  name: string,
+  tools: { name: string }[],
+  live: boolean,
+  style: McpNaming,
+): string {
+  const example = mcpToolName(name, tools[0]?.name ?? '<tool>', style);
+  return live
+    ? `They are live NOW, in this turn — no need to wait for the next message. ` +
+        `Their schemas are deferred, so if they are not already in your tool list, load them with ToolSearch ` +
+        `(query \`select:${example}\`) and then call them.`
+    : `Its tools are available from your NEXT message (as ${mcpToolGlob(name, style)}).`;
+}
 
 /**
  * Factory for one attached entry's proxy. Returns the same shape the built-in
@@ -180,6 +211,10 @@ function summarizeTools(tools: { name: string }[]): string {
 
 /** One-line description of where a definition runs. */
 function whereLine(entry: McpServerEntry): string {
+  if (entry.transport === 'bundled') {
+    const spec = getBundledMcpServer(entry.command);
+    return `built in${spec ? ` — ${spec.description}` : ''}`;
+  }
   if (entry.transport === 'http') return `http ${entry.url ?? '??'}`;
   if (entry.transport === 'local-stdio') return `local: ${entry.command ?? '??'}`;
   return entry.hostRef
@@ -310,10 +345,11 @@ export function createMcpManagerServer(ctx: McpConnectorContext) {
           const resolved = resolve(entry);
           try {
             const tools = await probeMcpEntry(resolved);
+            const live = (await ctx.activate?.([resolved])) ?? false;
             return ok(
               `Connected "${entry.name}" in ${folder} — ${tools.length} tool(s): ${summarizeTools(tools)}.\n` +
                 `Running on: ${whereLine(resolved)}.\n` +
-                `Its tools are available from your NEXT message (as ${mcpToolGlob(entry.name, ctx.style)}).`,
+                availability(entry.name, tools, live, ctx.style),
             );
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -346,9 +382,11 @@ export function createMcpManagerServer(ctx: McpConnectorContext) {
           const resolved = resolve(entry);
           try {
             const tools = await probeMcpEntry(resolved);
+            const live = (await ctx.activate?.([resolved])) ?? false;
             return ok(
               `Attached "${entry.name}" to ${folder} — ${tools.length} tool(s): ${summarizeTools(tools)}.\n` +
-                `Running on: ${whereLine(resolved)}.\nAvailable from your NEXT message.`,
+                `Running on: ${whereLine(resolved)}.\n` +
+                availability(entry.name, tools, live, ctx.style),
             );
           } catch (e) {
             return err(
@@ -384,6 +422,11 @@ export function createMcpManagerServer(ctx: McpConnectorContext) {
         async (args): Promise<ToolResult> => {
           const entry = getMcpServer(args.name);
           if (!entry) return err(`No MCP server named "${args.name}".`);
+          if (isBundledEntry(entry)) {
+            return err(
+              `"${entry.name}" is built into cloudchat and cannot be deleted. Use \`detach\` to switch it off in this folder.`,
+            );
+          }
           const folders = listWorkspacesForServer(entry.id);
           dropMcpClientsForServer(entry.id);
           deleteMcpServer(args.name);

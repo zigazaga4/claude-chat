@@ -705,6 +705,24 @@ verify the server first with \`mcp__remote__bash\`, then connect it.`
 \`ssh-stdio\` server here needs an explicit \`host\` (an \`ssh://…\` workspace),
 because there is no host to inherit.`;
 
+  // When new tools become callable differs by engine. The Agent SDK can change
+  // its tool set mid-turn; OpenCode builds it once per turn. `connect` and
+  // `attach` report which actually happened, so this only sets the expectation.
+  const timing =
+    opts.style === 'sdk'
+      ? `**Timing: usually immediate.** \`${p}connect\` and \`${p}attach\` try to make the
+server's tools callable in the SAME turn, and say so in their result. When they do,
+the tool schemas are deferred: load them with ToolSearch (\`select:<tool name>\`),
+then call them — do not wait for the user's next message. When the result instead
+says the tools arrive on the NEXT message, believe it: tell the user what arrived,
+and do not retry the connect because the tool "isn't there".`
+      : `**Timing: next message.** A newly connected server's tools are NOT callable in
+the turn that connects it. This engine builds its tool map when a turn starts.
+\`${p}connect\` returns the tool list it discovered, so use that to confirm
+success, tell the user what arrived, and call the tools from your next message.
+Do not retry the connect because the tool "isn't there" — it will not be there
+until the turn ends.`;
+
   return `# Extending your own toolset (MCP)
 
 You can add MCP servers to this session yourself, with \`${p}list\`,
@@ -718,12 +736,21 @@ conversation in \`${opts.cwd}\` and nowhere else. Server *definitions* are
 shared globally, so \`${p}list\` may show servers configured in other folders —
 \`${p}attach\` switches an existing one on here without redefining it.
 
-**Timing: next message.** A newly connected server's tools are NOT callable in
-the turn that connects it. Both engines build their tool map when a turn
-starts. \`${p}connect\` returns the tool list it discovered, so use that to
-confirm success, tell the user what arrived, and call the tools from your next
-message. Do not retry the connect because the tool "isn't there" — it will not
-be there until the turn ends.
+${timing}
+
+**Built in, off until attached.** cloudchat ships MCP servers nobody has to
+define: they appear in \`${p}list\` and are switched on per folder with
+\`${p}attach\` — never \`${p}connect\`, which would try to redefine them. Today that is
+\`whatsapp\` (tools ${mcpToolGlob('whatsapp', opts.style)}): it sends WhatsApp messages from the
+user's own linked account. When the user asks you to send a WhatsApp message and
+\`whatsapp\` is not in the connected list above, \`${p}attach\` it, then ${
+    opts.style === 'sdk'
+      ? 'load its tools and send in the same turn'
+      : 'tell the user it is on and send from the next message'
+  }. If its \`status\` tool reports WhatsApp is not linked,
+the user must click the WhatsApp button in the top bar and scan the QR code — you
+cannot do that for them. Messages go out under their name and cannot be recalled:
+send only what they asked, to the person they named.
 
 ${where}
 
@@ -1973,10 +2000,39 @@ export async function POST(req: NextRequest) {
         for (const entry of listServersForWorkspace(cwd)) {
           mcpServers[entry.name] = proxyMcpServerFactory(entry)();
         }
+        // Servers the model attaches DURING this turn. Kept apart from
+        // `mcpServers` on purpose: the init check below compares that map with
+        // what the CLI reports at boot, and a server added later is not part of
+        // that boot handshake.
+        const midTurnMcp: typeof mcpServers = {};
         mcpServers.mcp = createMcpManagerServer({
           workspaceCwd: cwd,
           isRemote,
           style: 'sdk',
+          // Make a just-attached server callable in THIS turn instead of the
+          // next. `setMcpServers` REPLACES the session's SDK servers with
+          // whatever it is given, so it must get the whole set: passing only
+          // the new one closes the manager mid-call (measured — the attach
+          // result came back as "Connection closed").
+          activate: async (entries) => {
+            try {
+              for (const entry of entries) {
+                midTurnMcp[entry.name] = proxyMcpServerFactory(entry)();
+              }
+              const res = await queryInstance.setMcpServers({
+                ...mcpServers,
+                ...midTurnMcp,
+              });
+              return Object.keys(res.errors).length === 0;
+            } catch (e) {
+              console.warn(
+                `[chat] mid-turn MCP activation failed, falling back to next message: ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+              return false;
+            }
+          },
         });
         const remoteToolsToBlock = [
           'Bash',

@@ -32,11 +32,16 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { BUNDLED_MCP_SERVERS } from './bundledMcp';
 import { getDb } from './db';
 import { decryptSecret, encryptSecret } from './secrets';
 
-/** How to reach the MCP server. stdio spawns a process; http speaks the wire protocol. */
-export type McpTransport = 'local-stdio' | 'ssh-stdio' | 'http';
+/**
+ * How to reach the MCP server. stdio spawns a process; http speaks the wire
+ * protocol; `bundled` is a server that ships inside cloudchat (bundledMcp.ts) —
+ * it cannot be created or edited through the management API, only attached.
+ */
+export type McpTransport = 'local-stdio' | 'ssh-stdio' | 'http' | 'bundled';
 
 export type McpServerEntry = {
   id: string;
@@ -81,6 +86,37 @@ export const MCP_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
 export function isValidMcpName(name: string): boolean {
   return MCP_NAME_PATTERN.test(name) && !RESERVED_MCP_NAMES.has(name);
+}
+
+/** True for servers that ship inside cloudchat — attachable, never editable or deletable. */
+export function isBundledEntry(entry: Pick<McpServerEntry, 'transport'>): boolean {
+  return entry.transport === 'bundled';
+}
+
+/**
+ * Make sure every bundled server has its registry row. Rows, not just a code
+ * table, because the per-folder attachment table references `mcp_servers(id)`
+ * — attaching is the same operation for a bundled server as for any other.
+ *
+ * Insert-only: an existing row of that name (e.g. one a user defined before the
+ * server shipped) is left alone rather than overwritten. Idempotent, so it is
+ * safe that several module instances each run it once.
+ */
+let bundledSeeded = false;
+function ensureBundledSeeded(): void {
+  if (bundledSeeded) return;
+  const stmt = getDb().prepare(
+    `INSERT INTO mcp_servers (
+       id, name, transport, command, url, headers_json, env_json,
+       host_ref, enabled, status, created_at, updated_at
+     ) VALUES (?, ?, 'bundled', ?, NULL, NULL, NULL, NULL, 1, 'built in', ?, ?)
+     ON CONFLICT(name) DO NOTHING`,
+  );
+  const now = Date.now();
+  for (const server of Object.values(BUNDLED_MCP_SERVERS)) {
+    stmt.run(randomUUID(), server.name, server.name, now, now);
+  }
+  bundledSeeded = true;
 }
 
 type Row = {
@@ -194,6 +230,12 @@ export function upsertMcpServer(input: UpsertMcpServer): McpServerEntry {
         `(max 32 chars), and not one of: ${[...RESERVED_MCP_NAMES].join(', ')}.`,
     );
   }
+  if (input.transport === 'bundled' || Object.hasOwn(BUNDLED_MCP_SERVERS, input.name)) {
+    throw new Error(
+      `"${input.name}" is a built-in MCP server and cannot be redefined. ` +
+        `Switch it on for a folder with \`attach\` (or the folder's MCP toggle).`,
+    );
+  }
   const db = getDb();
   const now = Date.now();
   db.prepare(
@@ -228,6 +270,7 @@ export function upsertMcpServer(input: UpsertMcpServer): McpServerEntry {
 }
 
 export function getMcpServer(name: string): McpServerEntry | null {
+  ensureBundledSeeded();
   const row = getDb()
     .prepare<[string], Row>(`SELECT * FROM mcp_servers WHERE name = ?`)
     .get(name);
@@ -235,6 +278,7 @@ export function getMcpServer(name: string): McpServerEntry | null {
 }
 
 export function getMcpServerById(id: string): McpServerEntry | null {
+  ensureBundledSeeded();
   const row = getDb()
     .prepare<[string], Row>(`SELECT * FROM mcp_servers WHERE id = ?`)
     .get(id);
@@ -243,6 +287,7 @@ export function getMcpServerById(id: string): McpServerEntry | null {
 
 /** The whole global library, or only definitions not globally disabled. */
 export function listMcpServers(enabledOnly = false): McpServerEntry[] {
+  ensureBundledSeeded();
   const rows = enabledOnly
     ? getDb()
         .prepare<[], Row>(`SELECT * FROM mcp_servers WHERE enabled = 1 ORDER BY name`)
